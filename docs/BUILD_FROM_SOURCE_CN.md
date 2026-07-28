@@ -99,9 +99,10 @@ GitHub 托管镜像的实际磁盘布局会变化，因此工作流以运行时�
 应配置 GitHub-hosted larger runner，而不是降低容量阈值或改回 recovery-only
 打包路径。
 
-同步前 CI 会通过 HTTP/1.1 串行获取一次固定的 `bootable/recovery` revision，
-并对瞬时 fetch 错误重试三次；随后全树同步使用 `--optimized-fetch`，不会再次
-访问已验证的 recovery SHA。这样 GitLab 传输失败会在全量下载前显示为单项目错误。
+同步前 CI 会通过 HTTP/1.1 串行获取 `bootable/recovery` 的 OrangeFox 上游分支，
+并对瞬时 fetch 错误重试三次。由于 Repo 在浅克隆的 SHA lock 路径中会隐藏 Git
+transport 错误，工作流只在其临时 manifest 副本中使用该分支，同步完成后立即
+detached checkout 回设备树固定的 recovery SHA；设备树中的 pinned manifest 从不改变。
 
 ## 4. 获取 OrangeFox 14.1
 
