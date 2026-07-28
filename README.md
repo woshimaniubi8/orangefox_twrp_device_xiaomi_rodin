@@ -156,6 +156,25 @@ host, keep at least 12 GiB of swap enabled. The low-memory wrapper also runs
 `tools/build-system-compatible-vendor-boot.sh`; a direct `mka vendorbootimage`
 only creates an intermediate recovery-only layout and must not be flashed.
 
+## GitHub Actions
+
+Pushing to `main` starts the `Build and publish OrangeFox rodin` workflow. It
+initializes `repo` from the device tree's pinned 14.1 manifest, builds the CN
+`OS3.0.303.0.WOJCNXM` profile, validates the complete 64 MiB AVB image, uploads
+the image and SHA-256 as an Actions artifact, and creates an immutable
+prerelease tagged with the workflow run and source commit. `workflow_dispatch`
+can build the Global `OS3.0.301.0.WOJMIXM` profile and can suppress publishing
+for a test run. The two firmware profiles are not interchangeable.
+
+The workflow deliberately uses a trusted self-hosted runner labelled
+`self-hosted`, `linux`, `x64`, and `orangefox`. In line with the OrangeFox 14.1
+environment requirements, after stale work is removed and swap is set up it
+requires 300 GiB free workspace space and a 32 GB-class RAM host; it also
+ensures at least 12 GiB swap (creating a 16 GiB swap file when needed). A normal
+GitHub-hosted runner does not have enough disk for the 14.1 source tree and its
+build output. The repository must permit `GITHUB_TOKEN` write access to
+repository contents for prerelease creation.
+
 ## Controlled device test
 
 Xiaomi's user-build fastbootd does not support `fetch`, so

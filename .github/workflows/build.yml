@@ -1,0 +1,388 @@
+name: Build and publish OrangeFox rodin
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      firmware_variant:
+        description: Firmware profile to build
+        required: true
+        default: cn
+        type: choice
+        options:
+          - cn
+          - global
+      build_jobs:
+        description: Parallel build jobs on the self-hosted runner
+        required: true
+        default: "2"
+        type: choice
+        options:
+          - "1"
+          - "2"
+      publish:
+        description: Create a prerelease after a successful manual build
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orangefox-rodin-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ORANGEFOX_BRANCH: "14.1"
+  ORANGEFOX_SYNC_REVISION: "11e4406b2bd1de939a26b6bfbad7e371cc3b1fa7"
+  ORANGEFOX_TOP: ${{ github.workspace }}/OrangeFox
+  RODIN_FIRMWARE_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.firmware_variant || 'cn' }}
+  OF_BUILD_JOBS: ${{ github.event_name == 'workflow_dispatch' && inputs.build_jobs || '2' }}
+
+jobs:
+  build:
+    # OrangeFox 14.1 plus its output consumes more space than a standard
+    # GitHub-hosted runner provides. Register this exact custom label on a
+    # trusted Linux x64 runner with at least 300 GiB available workspace.
+    runs-on: [self-hosted, linux, x64, orangefox]
+    timeout-minutes: 1440
+    outputs:
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+      firmware_baseline: ${{ steps.metadata.outputs.firmware_baseline }}
+      firmware_variant: ${{ steps.metadata.outputs.firmware_variant }}
+      image_name: ${{ steps.metadata.outputs.image_name }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+
+    steps:
+      - name: Check out device tree
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: device-tree
+
+      - name: Set build metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${RODIN_FIRMWARE_VARIANT}" in
+            cn)
+              image_name="OrangeFox-R12.0-Unofficial-rodin-system-compatible.img"
+              firmware_baseline="CN OS3.0.303.0.WOJCNXM"
+              ;;
+            global)
+              image_name="OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img"
+              firmware_baseline="Global OS3.0.301.0.WOJMIXM"
+              ;;
+            *)
+              echo "Unsupported RODIN_FIRMWARE_VARIANT: ${RODIN_FIRMWARE_VARIANT}" >&2
+              exit 1
+              ;;
+          esac
+
+          short_sha="${GITHUB_SHA::7}"
+          echo "artifact_name=orangefox-rodin-${RODIN_FIRMWARE_VARIANT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "firmware_baseline=${firmware_baseline}" >> "$GITHUB_OUTPUT"
+          echo "firmware_variant=${RODIN_FIRMWARE_VARIANT}" >> "$GITHUB_OUTPUT"
+          echo "image_name=${image_name}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=rodin-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Remove stale build worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ORANGEFOX_TOP" \
+            "$GITHUB_WORKSPACE/ofox-sync" \
+            "$GITHUB_WORKSPACE/pinned-manifest" \
+            "$GITHUB_WORKSPACE/artifacts"
+          rm -f "$GITHUB_WORKSPACE/ci-gitconfig" \
+            "$GITHUB_WORKSPACE/orangefox-build.log"
+
+      - name: Ensure build swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          MIN_SWAP_GIB=12 SWAPSIZE=16G \
+            bash "$GITHUB_WORKSPACE/device-tree/.github/scripts/setup-swap.sh"
+
+      - name: Check runner capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
+          required_kib=$((300 * 1024 * 1024))
+          if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
+            available_gib=$((available_kib / 1024 / 1024))
+            echo "::error::OrangeFox 14.1 requires at least 300 GiB free after swap setup; found ${available_gib} GiB."
+            exit 1
+          fi
+
+          memory_kib="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
+          required_memory_kib=$((30 * 1024 * 1024))
+          if [[ -z "${memory_kib}" || "${memory_kib}" -lt "${required_memory_kib}" ]]; then
+            memory_gib=$((memory_kib / 1024 / 1024))
+            echo "::error::OrangeFox 14.1 requires a 32 GB-class runner; found ${memory_gib} GiB RAM."
+            exit 1
+          fi
+
+          df -h "$GITHUB_WORKSPACE"
+          free -h
+
+      - name: Install host packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache cpio curl flex g++-multilib \
+            gcc-multilib git gnupg gperf imagemagick lib32ncurses-dev \
+            lib32readline-dev lib32z1-dev libelf-dev liblz4-tool \
+            libncurses-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
+            lz4 pngcrush python-is-python3 python3 rsync schedtool \
+            squashfs-tools unzip xsltproc zip zlib1g-dev
+
+      - name: Install repo tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d "$HOME/bin"
+          curl --fail --location --retry 5 --retry-all-errors \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            --output "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Sync pinned OrangeFox sources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          manifest_repo="$GITHUB_WORKSPACE/pinned-manifest"
+          export GIT_CONFIG_GLOBAL="$GITHUB_WORKSPACE/ci-gitconfig"
+          mkdir -p "$manifest_repo"
+          cp "$GITHUB_WORKSPACE/device-tree/manifests/orangefox-fox_14.1-pinned.xml" \
+            "$manifest_repo/default.xml"
+          git -C "$manifest_repo" init --initial-branch=main --quiet
+          git -C "$manifest_repo" config user.name "OrangeFox CI"
+          git -C "$manifest_repo" config user.email "orangefox-ci@localhost"
+          git -C "$manifest_repo" add default.xml
+          git -C "$manifest_repo" commit --quiet -m "Pinned OrangeFox 14.1 manifest"
+          git config --global protocol.file.allow always
+
+          mkdir -p "$ORANGEFOX_TOP"
+          cd "$ORANGEFOX_TOP"
+          repo init --depth=1 \
+            -u "file://${manifest_repo}" \
+            -b main \
+            -m default.xml
+
+          (
+            while sleep 60; do
+              date -u '+%Y-%m-%dT%H:%M:%SZ sync heartbeat'
+              df -h "$GITHUB_WORKSPACE"
+              free -h
+            done
+          ) &
+          heartbeat_pid=$!
+          trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
+
+          repo sync --force-sync -c -j2 --no-clone-bundle --no-tags
+
+          kill "$heartbeat_pid" 2>/dev/null || true
+          trap - EXIT
+
+      - name: Apply pinned OrangeFox setup patches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sync_dir="$GITHUB_WORKSPACE/ofox-sync"
+          git clone --filter=blob:none https://gitlab.com/OrangeFox/sync.git "$sync_dir"
+          git -C "$sync_dir" checkout --detach "$ORANGEFOX_SYNC_REVISION"
+          test "$(git -C "$sync_dir" rev-parse HEAD)" = "$ORANGEFOX_SYNC_REVISION"
+
+          vold_patch="$sync_dir/patches/patch-vold-fox_14.1.diff"
+          test "$(sha256sum "$vold_patch" | awk '{print $1}')" = \
+            "29b4b0b387c3185a3dcc69f141a3c84969510547d13ed2de71eefa8423c57778"
+          if git -C "$ORANGEFOX_TOP/system/vold" apply --reverse --check "$vold_patch" 2>/dev/null; then
+            echo "OrangeFox system/vold patch is already applied"
+          else
+            git -C "$ORANGEFOX_TOP/system/vold" apply --check "$vold_patch"
+            git -C "$ORANGEFOX_TOP/system/vold" apply "$vold_patch"
+          fi
+
+          boardconfig="$ORANGEFOX_TOP/vendor/twrp/config/BoardConfigSoong.mk"
+          grep -qx 'include bootable/recovery/orangefox_soong.mk' "$boardconfig" || \
+            sed -i '/SOONG_CONFIG_NAMESPACES += twrpVarsPlugin/i include bootable/recovery/orangefox_soong.mk' \
+              "$boardconfig"
+
+      - name: Install rodin device tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ORANGEFOX_TOP/device/xiaomi/rodin"
+          rsync -a --delete \
+            --exclude .git \
+            --exclude images \
+            "$GITHUB_WORKSPACE/device-tree/" \
+            "$ORANGEFOX_TOP/device/xiaomi/rodin/"
+
+      - name: Apply source patches and verify inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$ORANGEFOX_TOP/device/xiaomi/rodin/tools/apply-orangefox-patches.sh" \
+            "$ORANGEFOX_TOP"
+
+      - name: Drop sync metadata before compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ORANGEFOX_TOP/.repo" \
+            "$GITHUB_WORKSPACE/ofox-sync" \
+            "$GITHUB_WORKSPACE/pinned-manifest" \
+            "$GITHUB_WORKSPACE/ci-gitconfig"
+          df -h "$GITHUB_WORKSPACE"
+          free -h
+
+      - name: Build system-compatible vendor boot image
+        shell: bash
+        working-directory: ${{ env.ORANGEFOX_TOP }}
+        env:
+          ALLOW_MISSING_DEPENDENCIES: "true"
+          FOX_BUILD_DEVICE: rodin
+          FOX_AB_DEVICE: "1"
+          FOX_VIRTUAL_AB_DEVICE: "1"
+          OF_FORCE_PREBUILT_KERNEL: "1"
+          OF_LOW_MEMORY_BUILD: "1"
+          GOMEMLIMIT: "12GiB"
+          GOGC: "20"
+          _JAVA_OPTIONS: "-Xmx3g"
+          USE_CCACHE: "0"
+        run: |
+          set -euo pipefail
+          device/xiaomi/rodin/build-lowmem.sh vendorbootimage 2>&1 | \
+            tee "$GITHUB_WORKSPACE/orangefox-build.log"
+
+      - name: Validate release image
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ steps.metadata.outputs.image_name }}
+        run: |
+          set -euo pipefail
+          product="$ORANGEFOX_TOP/out/target/product/rodin"
+          image="$product/$IMAGE_NAME"
+          avbtool="$ORANGEFOX_TOP/out/host/linux-x86/bin/avbtool"
+
+          test -f "$image"
+          test -f "${image}.sha256"
+          test -x "$avbtool"
+          test "$(stat -c %s "$image")" = "67108864"
+          sha256sum --check --strict "${image}.sha256"
+          "$avbtool" verify_image --image "$image"
+
+      - name: Collect release artifact
+        shell: bash
+        env:
+          FIRMWARE_BASELINE: ${{ steps.metadata.outputs.firmware_baseline }}
+          IMAGE_NAME: ${{ steps.metadata.outputs.image_name }}
+        run: |
+          set -euo pipefail
+          product="$ORANGEFOX_TOP/out/target/product/rodin"
+          image="$product/$IMAGE_NAME"
+
+          rm -rf "$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          cp -fp "$image" "$GITHUB_WORKSPACE/artifacts/$IMAGE_NAME"
+          (
+            cd "$GITHUB_WORKSPACE/artifacts"
+            sha256sum "$IMAGE_NAME" > "${IMAGE_NAME}.sha256"
+          )
+
+          cat > "$GITHUB_WORKSPACE/artifacts/release-notes.md" <<EOF
+          Automated OrangeFox build for rodin.
+
+          - Device-tree commit: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
+          - OrangeFox branch: ${ORANGEFOX_BRANCH}
+          - Firmware profile: ${FIRMWARE_BASELINE}
+          - GitHub run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          This release contains only the validated, system-compatible vendor_boot image.
+          EOF
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orangefox-rodin-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            orangefox-build.log
+            OrangeFox/out/logs
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Clean build worktree
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ORANGEFOX_TOP" \
+            "$GITHUB_WORKSPACE/ofox-sync" \
+            "$GITHUB_WORKSPACE/pinned-manifest" \
+            "$GITHUB_WORKSPACE/artifacts"
+          rm -f "$GITHUB_WORKSPACE/ci-gitconfig" \
+            "$GITHUB_WORKSPACE/orangefox-build.log"
+
+  release:
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: release-artifacts
+
+      - name: Verify downloaded files
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ needs.build.outputs.image_name }}
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          sha256sum --check --strict "${IMAGE_NAME}.sha256"
+
+      - name: Create prerelease
+        shell: bash
+        env:
+          FIRMWARE_VARIANT: ${{ needs.build.outputs.firmware_variant }}
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_NAME: ${{ needs.build.outputs.image_name }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            "release-artifacts/$IMAGE_NAME" \
+            "release-artifacts/${IMAGE_NAME}.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "OrangeFox rodin ${FIRMWARE_VARIANT} CI ${GITHUB_SHA::7}" \
+            --notes-file release-artifacts/release-notes.md \
+            --prerelease
