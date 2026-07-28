@@ -164,6 +164,12 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
 check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
     'stock_boot_control_service=' \
     "stock AIDL BootControl service is not retained by the vendor_boot repacker"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'stock_boot_control_manifest_destination="$platform_root/vendor/etc/vintf/manifest/android.hardware.boot-service.mtk.xml"' \
+    "AIDL BootControl VINTF fragment is not relocated to the device manifest path"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'pruned platform still contains a device VINTF fragment under /system' \
+    "vendor_boot repacker does not reject device VINTF fragments under /system"
 check_contains "${DEVICE_DIR}/BoardConfig.mk" \
     'OF_USE_AIDL_BOOT_CONTROL := 1' \
     "OrangeFox is not configured to use AIDL BootControl"

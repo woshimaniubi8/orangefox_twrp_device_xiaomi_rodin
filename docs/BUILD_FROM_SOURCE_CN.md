@@ -194,8 +194,9 @@ rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeF
 3. stock DTB、header 参数和 cmdline。
 4. 64 MiB AVB hash footer。
 
-type-1 还保留 stock MediaTek AIDL BootControl binary 与其 VINTF fragment。
-Recovery 用本设备 init rc 启动该服务并 preload libc++ compatibility shim；不能
+type-1 还保留 stock MediaTek AIDL BootControl binary。它的 device VINTF fragment
+必须位于 `/vendor/etc/vintf/manifest`，不能留在 `/system/etc/vintf/manifest`；后者会被
+`hwservicemanager` 当作 framework fragment 解析，导致 Keystore2 无法注册。Recovery 用本设备 init rc 启动该服务并 preload libc++ compatibility shim；不能
 删除它后只依赖旧 HIDL fallback，否则某些 ROM updater 的 `bootctl set-active-boot-slot`
 会错误返回失败。`BoardConfig.mk` 中的 `OF_USE_AIDL_BOOT_CONTROL := 1` 还会让
 OrangeFox 自身的 slot selector 使用同一个 AIDL 服务。
@@ -299,8 +300,8 @@ file "$VERIFY/vendor_ramdisk00" "$VERIFY/vendor_ramdisk01"
 - `vendor_ramdisk01`：type-2，name=`recovery`，最多 7 个补充模块。
 - 两者都是 LZ4 legacy。
 - combined vendor ramdisk 小于 60,000,000 字节。
-- platform fragment 的 `/system/etc/vintf/manifest` 下除
-  `android.hardware.boot-service.mtk.xml` 外没有 recovery device manifest。
+- platform fragment 的 `/system/etc/vintf/manifest` 下没有 `type="device"` VINTF fragment。
+- `android.hardware.boot-service.mtk.xml` 位于 `/vendor/etc/vintf/manifest`。
 
 ## 11. 安全刷写与回退
 

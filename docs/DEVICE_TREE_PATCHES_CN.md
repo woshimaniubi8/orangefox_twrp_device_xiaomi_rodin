@@ -8,7 +8,7 @@
 
 - `Android.bp`：将 Android 15 vendor 的 secure-element 与 OMAPI NDK 预编译库改为 recovery 专用模块名，保留 Android 16 构建图中的 AIDL 生成头文件，并让 `rodin_omapi_bridge` 显式链接 `librodin_libcxx_compat`。
 - `recovery/root/init.recovery.keymint.rc`：为 OMAPI bridge 设置 vendor/system 运行时库搜索路径和 libc++ compatibility preload；在 `tee-supplicant` 就绪后并行启动 KeyMint、secure-element 与 NXP Weaver，不再以 bridge ready 属性阻塞 Weaver。
-- `BoardConfig.mk`、`recovery/root/init.recovery.bootctl.rc` 与 post-build repacker：OrangeFox 和 ROM updater 均使用 stock MediaTek AIDL BootControl；重打包器保留 binary/VINTF，recovery rc 通过 compatibility shim 启动它，避免旧 HIDL fallback 的 UFS boot-region ioctl 使 slot 切换失败。
+- `BoardConfig.mk`、`recovery/root/init.recovery.bootctl.rc` 与 post-build repacker：OrangeFox 和 ROM updater 均使用 stock MediaTek AIDL BootControl；重打包器保留 binary，并将其 device VINTF fragment 放到 `/vendor/etc/vintf/manifest`，避免 `/system` framework VINTF 解析失败而使 Keystore2 崩溃。recovery rc 通过 compatibility shim 启动该服务，避免旧 HIDL fallback 的 UFS boot-region ioctl 使 slot 切换失败。
 - `tools/build-system-compatible-vendor-boot.sh`：增加 `RODIN_FIRMWARE_VARIANT=cn|global`，使最终镜像保留与目标系统相匹配的 type-1 platform ramdisk。
 - 构建前检查、文件哈希清单和构建文档。
 

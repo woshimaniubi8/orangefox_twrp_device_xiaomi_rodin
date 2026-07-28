@@ -88,6 +88,7 @@ mkdir -p "$platform_root"
 
 stock_boot_control_service="$platform_root/system/bin/hw/android.hardware.boot-service.mtk_recovery"
 stock_boot_control_manifest="$platform_root/system/etc/vintf/manifest/android.hardware.boot-service.mtk.xml"
+stock_boot_control_manifest_destination="$platform_root/vendor/etc/vintf/manifest/android.hardware.boot-service.mtk.xml"
 for required in "$stock_boot_control_service" "$stock_boot_control_manifest" \
         "$platform_root/system/lib64/libmtk_bsg.so"; do
     if [ ! -f "$required" ]; then
@@ -101,6 +102,12 @@ if ! grep -qF '<fqname>IBootControl/default</fqname>' "$stock_boot_control_manif
     echo "stock AIDL BootControl VINTF fragment is invalid" >&2
     exit 1
 fi
+
+# This is a device manifest. Keeping it below /system makes
+# hwservicemanager parse it as a framework fragment, which prevents Keystore2
+# from registering and leaves recovery waiting for metadata decryption.
+mkdir -p "$(dirname "$stock_boot_control_manifest_destination")"
+mv "$stock_boot_control_manifest" "$stock_boot_control_manifest_destination"
 
 rm -rf "$platform_root/res"
 rm -f \
@@ -127,9 +134,13 @@ rm -f \
     "$platform_root/system/lib64/librecovery_ui.so"
 
 if find "$platform_root/system/etc/vintf/manifest" -maxdepth 1 -type f \
-        ! -name android.hardware.boot-service.mtk.xml \
         -exec grep -l 'type="device"' {} + 2>/dev/null | grep -q .; then
-    echo "pruned platform still contains an unexpected device VINTF fragment under /system" >&2
+    echo "pruned platform still contains a device VINTF fragment under /system" >&2
+    exit 1
+fi
+
+if ! grep -qF '<fqname>IBootControl/default</fqname>' "$stock_boot_control_manifest_destination"; then
+    echo "relocated AIDL BootControl VINTF fragment is invalid" >&2
     exit 1
 fi
 
