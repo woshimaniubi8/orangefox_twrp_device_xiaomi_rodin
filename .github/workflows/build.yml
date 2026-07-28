@@ -200,6 +200,11 @@ jobs:
           git -C "$manifest_repo" add default.xml
           git -C "$manifest_repo" commit --quiet -m "Pinned OrangeFox 14.1 manifest"
           git config --global protocol.file.allow always
+          # GitLab occasionally resets long HTTP/2 fetches from hosted runners.
+          # Keep the transport reproducible and tolerate slow pack transfers.
+          git config --global http.version HTTP/1.1
+          git config --global http.lowSpeedLimit 1
+          git config --global http.lowSpeedTime 600
 
           mkdir -p "$ORANGEFOX_TOP"
           cd "$ORANGEFOX_TOP"
@@ -218,7 +223,16 @@ jobs:
           heartbeat_pid=$!
           trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
 
-          repo sync --force-sync -c -j2 --no-clone-bundle --no-tags
+          # The pinned OrangeFox recovery commit is five revisions behind the
+          # branch tip and uses a project-specific depth of 50. Fetch it
+          # serially first so a GitLab transport error is visible immediately.
+          repo sync -c -j1 --fail-fast --verbose --retry-fetches=3 \
+            --no-clone-bundle --no-tags --optimized-fetch bootable/recovery
+
+          # The recovery SHA now exists locally, so optimized fetch skips a
+          # second request for it while the remaining pinned projects sync.
+          repo sync -c -j2 --retry-fetches=3 \
+            --no-clone-bundle --no-tags --optimized-fetch
 
           kill "$heartbeat_pid" 2>/dev/null || true
           trap - EXIT
