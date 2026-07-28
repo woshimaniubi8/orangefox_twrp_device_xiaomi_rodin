@@ -21,7 +21,7 @@ device/xiaomi/rodin
 `manifests/orangefox-fox_14.1-pinned.xml` 是当前 662 个 repo 项目的精确 revision 记录，其中包括 OrangeFox `vendor/recovery` 和 `external/se_omapi`，SHA-256 为：
 
 ```text
-16e727c550ccb7387278c855dcb489b605608374a08c75808b3afd08bc70b4fc
+46e411d59480e7a0dc1858bfe85de286dccd5f9de8c605d7be9e2cc770542a63
 ```
 
 ## 不需要保留

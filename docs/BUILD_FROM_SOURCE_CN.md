@@ -35,6 +35,7 @@ sha256sum rodin-device-tree-*.tar.zst
 | --- | --- |
 | OrangeFox 分支 | `fox_14.1` |
 | `bootable/recovery` 基线 | `fd98f33a722bd0bd52034f170bb91e2862654d6b` |
+| `bootable/recovery` 来源 | OrangeFox `fox_14.1`（manifest 使用 50 层浅克隆覆盖全局 1 层设置） |
 | `build/make` 基线 | `506df226dd003a364916b6b3ee1eb3bf9064f97f` |
 | `vendor/recovery` 基线 | `0d7959e6538db5ddfff892cf7dfe207c68b0b753` |
 | 设备 | Redmi Turbo 4 / `rodin` / `24129RT7CC` |
