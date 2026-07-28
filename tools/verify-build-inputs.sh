@@ -77,7 +77,7 @@ check_file "${DEVICE_DIR}/tools/import-global-firmware-inputs.sh"
 check_file "${DEVICE_DIR}/manifests/device-blobs.sha256"
 check_file "${DEVICE_DIR}/manifests/orangefox-fox_14.1-pinned.xml"
 check_sha256 "${DEVICE_DIR}/patches/orangefox-build-make.patch" 5f2d3f43a4d78eee6d560a4a169df30fc95de6fa2ed294e3210e684a641a8329
-check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" d36b4ef38558113296fe4353d8374f5b8f700d829531f2b7139b74c7f7fdcfd9
+check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" acba573c50c0c7c97518db71920dede0d8db34475f4573de71c8358be45eb922
 check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 4b0a2773e23ef7b8536c48ff0a4728ecda20a271197354d1c34ea926448734b7
 
 if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
@@ -223,7 +223,8 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
         OF_SKIP_POST_DECRYPT_THEME_RELOAD \
         OF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT \
         fallback_face \
-        processKeyChord; do
+        processKeyChord \
+        "skipping logical partition alias"; do
         search_tree "$marker" "${TOP_DIR}/bootable/recovery" || \
             fail "OrangeFox source patch marker missing: $marker"
     done

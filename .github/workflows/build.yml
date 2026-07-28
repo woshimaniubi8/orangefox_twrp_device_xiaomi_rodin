@@ -15,7 +15,7 @@ on:
           - cn
           - global
       build_jobs:
-        description: Parallel build jobs on the self-hosted runner
+        description: Parallel build jobs on the GitHub-hosted runner
         required: true
         default: "2"
         type: choice
@@ -32,7 +32,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: orangefox-rodin-${{ github.workflow }}-${{ github.ref }}
+  # Keep the existing CN key so the next push cancels queued legacy
+  # self-hosted work. A manual Global dispatch has an isolated key.
+  group: orangefox-rodin-${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && inputs.firmware_variant == 'global' && '-global' || '' }}
   cancel-in-progress: true
 
 env:
@@ -44,11 +46,10 @@ env:
 
 jobs:
   build:
-    # OrangeFox 14.1 plus its output consumes more space than a standard
-    # GitHub-hosted runner provides. Register this exact custom label on a
-    # trusted Linux x64 runner with at least 300 GiB available workspace.
-    runs-on: [self-hosted, linux, x64, orangefox]
-    timeout-minutes: 1440
+    # Hosted image layouts vary. The first steps reclaim unrelated payloads,
+    # then verify the observed capacity before building at low concurrency.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
     outputs:
       artifact_name: ${{ steps.metadata.outputs.artifact_name }}
       firmware_baseline: ${{ steps.metadata.outputs.firmware_baseline }}
@@ -60,7 +61,7 @@ jobs:
       - name: Check out device tree
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           path: device-tree
 
       - name: Set build metadata
@@ -102,36 +103,11 @@ jobs:
           rm -f "$GITHUB_WORKSPACE/ci-gitconfig" \
             "$GITHUB_WORKSPACE/orangefox-build.log"
 
-      - name: Ensure build swap
+      - name: Reclaim GitHub-hosted runner storage
         shell: bash
         run: |
           set -euo pipefail
-          MIN_SWAP_GIB=12 SWAPSIZE=16G \
-            bash "$GITHUB_WORKSPACE/device-tree/.github/scripts/setup-swap.sh"
-
-      - name: Check runner capacity
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
-          required_kib=$((300 * 1024 * 1024))
-          if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
-            available_gib=$((available_kib / 1024 / 1024))
-            echo "::error::OrangeFox 14.1 requires at least 300 GiB free after swap setup; found ${available_gib} GiB."
-            exit 1
-          fi
-
-          memory_kib="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
-          required_memory_kib=$((30 * 1024 * 1024))
-          if [[ -z "${memory_kib}" || "${memory_kib}" -lt "${required_memory_kib}" ]]; then
-            memory_gib=$((memory_kib / 1024 / 1024))
-            echo "::error::OrangeFox 14.1 requires a 32 GB-class runner; found ${memory_gib} GiB RAM."
-            exit 1
-          fi
-
-          df -h "$GITHUB_WORKSPACE"
-          free -h
+          bash "$GITHUB_WORKSPACE/device-tree/.github/scripts/reclaim-github-hosted-space.sh"
 
       - name: Install host packages
         shell: bash
@@ -140,11 +116,62 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache cpio curl flex g++-multilib \
-            gcc-multilib git gnupg gperf imagemagick lib32ncurses-dev \
-            lib32readline-dev lib32z1-dev libelf-dev liblz4-tool \
-            libncurses-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
-            lz4 pngcrush python-is-python3 python3 rsync schedtool \
-            squashfs-tools unzip xsltproc zip zlib1g-dev
+            gcc-multilib git git-lfs gnupg gperf imagemagick \
+            lib32ncurses-dev lib32readline-dev lib32z1-dev libelf-dev \
+            liblz4-tool libncurses-dev libsdl1.2-dev libssl-dev libxml2 \
+            libxml2-utils lz4 openjdk-17-jdk-headless pngcrush \
+            python-is-python3 python3 ripgrep rsync schedtool squashfs-tools \
+            unzip xsltproc zip zlib1g-dev
+          sudo apt-get clean
+          java_home="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+          test -x "${java_home}/bin/java"
+          echo "JAVA_HOME=${java_home}" >> "$GITHUB_ENV"
+
+      - name: Fetch device blobs from Git LFS
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C "$GITHUB_WORKSPACE/device-tree" lfs pull
+          git -C "$GITHUB_WORKSPACE/device-tree" lfs fsck
+          test -s "$GITHUB_WORKSPACE/device-tree/prebuilt/vendor_boot_stock.img"
+          if grep -aqF 'version https://git-lfs.github.com/spec/v1' \
+            "$GITHUB_WORKSPACE/device-tree/prebuilt/vendor_boot_stock.img"; then
+            echo "::error::Git LFS did not materialize prebuilt/vendor_boot_stock.img."
+            exit 1
+          fi
+
+      - name: Ensure build swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          # setup-swap.sh creates only the missing capacity plus a header margin.
+          MIN_SWAP_GIB=12 \
+            bash "$GITHUB_WORKSPACE/device-tree/.github/scripts/setup-swap.sh"
+
+      - name: Check GitHub-hosted runner capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
+          required_kib=$((95 * 1024 * 1024))
+          if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
+            available_gib=$((available_kib / 1024 / 1024))
+            echo "::error::OrangeFox rodin needs at least 95 GiB free after hosted-image cleanup and swap setup; found ${available_gib} GiB."
+            echo "::error::Use a GitHub-hosted larger runner if this public standard runner image cannot meet the guard."
+            exit 1
+          fi
+
+          memory_kib="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
+          required_memory_kib=$((14 * 1024 * 1024))
+          if [[ -z "${memory_kib}" || "${memory_kib}" -lt "${required_memory_kib}" ]]; then
+            memory_gib=$((memory_kib / 1024 / 1024))
+            echo "::error::This workflow needs a public 16 GB-class GitHub-hosted runner; found ${memory_gib} GiB RAM."
+            exit 1
+          fi
+
+          df -h "$GITHUB_WORKSPACE"
+          free -h
 
       - name: Install repo tool
         shell: bash
@@ -250,6 +277,25 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
           free -h
 
+      - name: Check compilation capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The initial guard reserves space for the source checkout while
+          # .repo still exists. This guard catches runner-image changes after
+          # that metadata has been removed and before Soong writes out/.
+          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
+          required_kib=$((70 * 1024 * 1024))
+          if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
+            available_gib=$((available_kib / 1024 / 1024))
+            echo "::error::OrangeFox rodin needs at least 70 GiB free after .repo cleanup; found ${available_gib} GiB."
+            exit 1
+          fi
+
+          du -sh "$ORANGEFOX_TOP"
+          df -h "$GITHUB_WORKSPACE"
+
       - name: Build system-compatible vendor boot image
         shell: bash
         working-directory: ${{ env.ORANGEFOX_TOP }}
@@ -284,6 +330,8 @@ jobs:
           test -x "$avbtool"
           test "$(stat -c %s "$image")" = "67108864"
           sha256sum --check --strict "${image}.sha256"
+          test -f "$product/vendor_boot.img"
+          cmp -s "$image" "$product/vendor_boot.img"
           "$avbtool" verify_image --image "$image"
 
       - name: Collect release artifact
@@ -347,7 +395,7 @@ jobs:
             "$GITHUB_WORKSPACE/orangefox-build.log"
 
   release:
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+    if: ${{ needs.build.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 30

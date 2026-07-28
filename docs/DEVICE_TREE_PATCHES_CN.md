@@ -14,6 +14,20 @@
 
 这份补丁解决三个已定位的问题：原先 Soong 会把设备树中 Android 15 预编译 NDK 库与 Android 16 AIDL 生成模块混淆，导致 recovery 依赖解析失败；运行时的 bridge 则因找不到 `/vendor/lib64` 内的 NDK 库而无法启动，使 Weaver 被错误的 ready gate 无限阻塞；旧 HIDL BootControl fallback 在 rodin 上会使 UFS boot-region 设置失败并导致 slot 切换失败。它们分别影响可编译性、FBE synthetic-password 流程和 Virtual A/B ROM 更新后的 slot 处理。
 
+## OrangeFox 共享 Recovery patch
+
+`patches/orangefox-recovery.patch` 由 `tools/apply-orangefox-patches.sh` 应用于 pinned
+`bootable/recovery`。其中的 Virtual A/B 修复保留第一轮对当前槽位
+`system_a`、`vendor_a` 等逻辑分区和 `-cow` 的精确清理；仅在后续兜底扫描中跳过
+`Super_Partition_List` 中的无槽位 mapper alias，例如
+`/dev/block/mapper/vendor -> vendor_a`。
+
+这些 alias 由 Recovery 的 image-flashing 兼容逻辑建立，不是第二个可删除的逻辑分区。
+因此修复不会关闭 `Check_Pending_Merges()`，也不会绕过 Virtual A/B 的 snapshot merge
+安全检查。构建后若 Format Data 日志出现
+`skipping logical partition alias: vendor`，说明已命中该保护；若仍出现
+`removing dynamic partition: vendor`，刷入的仍是旧镜像或共享 patch 未应用。
+
 ## 应用
 
 先保存完整设备树和现有工作，再在 OrangeFox 源码根目录执行。补丁文件必须在目标设备树外部，因为应用前目标树中尚不存在该文件。

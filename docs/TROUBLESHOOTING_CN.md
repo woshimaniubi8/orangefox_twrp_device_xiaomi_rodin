@@ -161,6 +161,12 @@ To flash additional zips, please reboot recovery to switch to the updated slot.
 `ro.boot.slot_suffix`，再执行格式化。当前日志中 `Unable to unmap dynamic
 partitions` 发生在 `Check_Pending_Merges()` 内、真正擦除 `/data` 之前。
 
+本设备树的当前 `orangefox-recovery.patch` 会在精确清理当前槽位
+`vendor_a` 等分区后，跳过 `vendor`、`system` 等无槽位 mapper alias。
+正常日志应出现 `skipping logical partition alias: vendor`，随后才是
+`checking for merges` 和实际的 Data wipe。若仍出现
+`removing dynamic partition: vendor` 后立刻报错，说明运行的是未应用此 patch 的旧镜像。
+
 如果已经重启 Recovery 后仍失败，必须采集那一次失败的完整日志；不要复用刷包前的
 日志。连接 ADB 后执行：
 

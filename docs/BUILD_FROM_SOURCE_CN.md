@@ -70,6 +70,34 @@ sudo apt install -y \
 
 不要在空间不足的根分区构建。Soong 生成构建图时会出现短时高内存峰值。
 
+### GitHub Actions 标准托管 Runner
+
+设备树中的 `.github/workflows/build.yml` 使用 GitHub 托管的
+`ubuntu-24.04`，不需要自行注册 `self-hosted` Runner。流程会在同步源码前
+删除该临时 VM 上不参与构建的 Android SDK、语言工具缓存、浏览器和 Docker
+层，然后安装构建依赖、从 Git LFS 拉取 `prebuilt/` 输入，并补足至少 12 GiB
+swap。CI 只补足缺少的 swap 并为 header 预留余量，不会丢弃托管镜像已有的
+swap。
+
+rodin 在删除 `.repo` 后，源码与完整 `out/` 的构建峰值仍约为 83 GiB。因此
+工作流只会在 swap 建立后仍有至少 95 GiB 可用空间、且物理内存至少 14 GiB
+时继续同步和构建。看到 `df` 中约 63 GiB 空闲，只说明 Job 已经被 GitHub
+托管 VM 调度，尚不足以证明完整构建可完成。
+
+同步完成并删除 `.repo` 后，工作流会再次要求至少 70 GiB 可用空间才启动
+Soong。CN 与 Global 使用不同的并发组，手动 Global 构建不会取消正在运行的
+CN 构建；CN 保留原并发键，因此下一次推送也会自动取消仍在排队的旧
+self-hosted CN 任务。
+
+只有 `main` 上成功的构建会创建 prerelease。其他 ref 的手动构建仍会上传
+artifact，但不会向仓库发布 release。
+
+GitHub 托管镜像的实际磁盘布局会变化，因此工作流以运行时的 `df` 与
+`/proc/meminfo` 为准，而不假定固定容量。GitHub 托管 Job 最长运行 6 小时，
+故工作流默认只使用两个并行编译任务。若清理后的实际空间仍未达到 95 GiB，
+应配置 GitHub-hosted larger runner，而不是降低容量阈值或改回 recovery-only
+打包路径。
+
 ## 4. 获取 OrangeFox 14.1
 
 ```bash
@@ -110,6 +138,7 @@ recovery patch 包含：
 - rodin 解密后禁止完整 GUI package 重建，避免 recovery `SIGSEGV`。
 - 解密页面显示前加载默认简体中文。
 - MiSans 主题选择项和 SIH6887 震动节点支持。
+- Virtual A/B `Format Data` 时保留 `vendor -> vendor_a` 等无槽位 mapper 别名，避免在 pending-merge 检查前错误删除别名而中止格式化；`*_a`/`*_b` 与 `-cow` 的精确清理不变。
 
 在干净源码中执行：
 

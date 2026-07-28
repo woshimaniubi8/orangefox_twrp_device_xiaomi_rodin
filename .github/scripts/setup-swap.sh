@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SWAPFILE="${SWAPFILE:-/swapfile-orangefox}"
-SWAPSIZE="${SWAPSIZE:-16G}"
+SWAPSIZE="${SWAPSIZE:-}"
 MIN_SWAP_GIB="${MIN_SWAP_GIB:-12}"
 
 if ! [[ "${MIN_SWAP_GIB}" =~ ^[1-9][0-9]*$ ]]; then
@@ -10,12 +10,13 @@ if ! [[ "${MIN_SWAP_GIB}" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
-if ! [[ "${SWAPSIZE}" =~ ^[1-9][0-9]*G$ ]]; then
+if [[ -n "${SWAPSIZE}" && ! "${SWAPSIZE}" =~ ^[1-9][0-9]*G$ ]]; then
   echo "SWAPSIZE must use whole GiB units, for example 16G: ${SWAPSIZE}" >&2
   exit 1
 fi
 
-required_swap_kib=$((MIN_SWAP_GIB * 1024 * 1024))
+gib_kib=$((1024 * 1024))
+required_swap_kib=$((MIN_SWAP_GIB * gib_kib))
 current_swap_kib="$(awk '/^SwapTotal:/ { print $2 }' /proc/meminfo)"
 
 if (( current_swap_kib >= required_swap_kib )); then
@@ -34,13 +35,29 @@ if sudo swapon --show=NAME --noheadings | awk '{$1=$1; print}' | grep -Fxq "$SWA
   exit 1
 fi
 
+missing_swap_kib=$((required_swap_kib - current_swap_kib))
+# mkswap reserves metadata at the beginning of the file. Keep one MiB of
+# margin so a file sized at the nominal deficit still satisfies SwapTotal.
+minimum_new_swap_kib=$((missing_swap_kib + 1024))
+if [[ -z "${SWAPSIZE}" ]]; then
+  swap_size_gib=$(((minimum_new_swap_kib + gib_kib - 1) / gib_kib))
+  SWAPSIZE="${swap_size_gib}G"
+else
+  swap_size_gib="${SWAPSIZE%G}"
+  supplied_swap_kib=$((swap_size_gib * gib_kib))
+  if (( supplied_swap_kib < minimum_new_swap_kib )); then
+    echo "SWAPSIZE=${SWAPSIZE} is too small to provide ${MIN_SWAP_GIB} GiB total swap." >&2
+    exit 1
+  fi
+fi
+
 if [[ -e "${SWAPFILE}" ]]; then
   sudo rm -f "${SWAPFILE}"
 fi
 
-echo "Creating ${SWAPSIZE} swap at ${SWAPFILE}"
+echo "Creating ${SWAPSIZE} additional swap at ${SWAPFILE}"
 if ! sudo fallocate -l "${SWAPSIZE}" "${SWAPFILE}"; then
-  swap_mib=$(( ${SWAPSIZE%G} * 1024 ))
+  swap_mib=$((swap_size_gib * 1024))
   sudo dd if=/dev/zero of="${SWAPFILE}" bs=1M count="${swap_mib}" status=progress
 fi
 

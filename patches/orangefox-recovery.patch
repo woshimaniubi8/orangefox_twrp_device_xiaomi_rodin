@@ -640,3 +640,48 @@ index c9fdc572..f74435d2 100644
  #endif
  }
  
+diff --git a/partitionmanager.cpp b/partitionmanager.cpp
+index 0ea3a125..9fdbdcbd 100755
+--- a/partitionmanager.cpp
++++ b/partitionmanager.cpp
+@@ -25,6 +25,7 @@
+ #include <sys/stat.h>
+ #include <sys/vfs.h>
+ #include <unistd.h>
++#include <algorithm>
+ #include <map>
+ #include <vector>
+ #include <dirent.h>
+@@ -4875,13 +4876,25 @@ bool TWPartitionManager::Unmap_Super_Devices() {
+ 		while ((de = readdir(d)) != NULL) {
+ 			if (de->d_type == DT_LNK) {
+ 				std::string partition = de->d_name;
+-				if (strcmp(partition.c_str(),"userdata") != 0){
+-					LOGINFO("removing dynamic partition: %s\n", partition.c_str());
+-					destroyed = DestroyLogicalPartition(partition);
+-					if (!destroyed) {
+-						closedir(d);
+-						return false;
+-					}
++				if (partition == "userdata") {
++					continue;
++				}
++
++				// Prepare_Super_Volume creates bare mapper aliases such as
++				// /dev/block/mapper/vendor -> vendor_a for image flashing. The
++				// targeted loop above has already removed the slot-suffixed logical
++				// partition, so the alias must not be treated as another DM device.
++				if (std::find(Super_Partition_List.begin(), Super_Partition_List.end(), partition) !=
++						Super_Partition_List.end()) {
++					LOGINFO("skipping logical partition alias: %s\n", partition.c_str());
++					continue;
++				}
++
++				LOGINFO("removing dynamic partition: %s\n", partition.c_str());
++				destroyed = DestroyLogicalPartition(partition);
++				if (!destroyed) {
++					closedir(d);
++					return false;
+ 				}
+ 			}
+ 		}

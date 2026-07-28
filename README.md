@@ -166,14 +166,29 @@ prerelease tagged with the workflow run and source commit. `workflow_dispatch`
 can build the Global `OS3.0.301.0.WOJMIXM` profile and can suppress publishing
 for a test run. The two firmware profiles are not interchangeable.
 
-The workflow deliberately uses a trusted self-hosted runner labelled
-`self-hosted`, `linux`, `x64`, and `orangefox`. In line with the OrangeFox 14.1
-environment requirements, after stale work is removed and swap is set up it
-requires 300 GiB free workspace space and a 32 GB-class RAM host; it also
-ensures at least 12 GiB swap (creating a 16 GiB swap file when needed). A normal
-GitHub-hosted runner does not have enough disk for the 14.1 source tree and its
-build output. The repository must permit `GITHUB_TOKEN` write access to
-repository contents for prerelease creation.
+The build job uses GitHub-hosted `ubuntu-24.04`; no self-hosted runner needs to
+be registered. It deletes Android SDKs, language tool caches, browsers and
+container layers that are unused by this build, installs only the required host
+packages, and adds only the swap deficit plus a small header margin when the
+runner has insufficient swap. This guarantees at least 12 GiB of usable swap
+without discarding any swap already supplied by the hosted image.
+The capacity guard then requires 95 GiB free space and a 14 GiB RAM-class VM.
+Runner image layouts can change, so the job prints and checks the observed disk
+and memory state rather than assuming a fixed hosted-VM allocation. It stops
+before `repo sync` if the guard cannot be satisfied. In that case, configure a
+GitHub-hosted larger runner and use its workflow label; the standard runner
+cannot safely complete this source tree. GitHub-hosted jobs also have a six-hour
+execution limit, so the build remains low-concurrency. The repository must permit
+`GITHUB_TOKEN` write access to repository contents for prerelease creation.
+
+The workflow checks space again after deleting `.repo` and before Soong starts;
+it requires 70 GiB at that stage. CN and Global runs use separate concurrency
+groups, so a manual Global build does not cancel an in-flight CN build. CN keeps
+the prior concurrency key, so its next push also cancels any queued legacy
+self-hosted CN run.
+
+Only successful builds of `main` can create prereleases. A manual test from
+another ref still uploads its artifact but cannot publish a repository release.
 
 ## Controlled device test
 
