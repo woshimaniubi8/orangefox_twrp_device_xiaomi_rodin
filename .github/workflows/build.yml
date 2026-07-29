@@ -194,36 +194,6 @@ jobs:
           mkdir -p "$manifest_repo"
           cp "$GITHUB_WORKSPACE/device-tree/manifests/orangefox-fox_14.1-pinned.xml" \
             "$manifest_repo/default.xml"
-
-          # Repo fails before exposing Git's transport stderr when a shallow
-          # project is locked directly to a SHA. Bootstrap only this copied CI
-          # manifest through its advertised upstream branch; the original
-          # device-tree manifest remains SHA-pinned and is verified later.
-          recovery_revision="$(
-            python3 - "$manifest_repo/default.xml" <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          path = sys.argv[1]
-          tree = ET.parse(path)
-          recovery = next(
-              (project for project in tree.getroot().findall("project")
-               if project.get("path") == "bootable/recovery"),
-              None,
-          )
-          if recovery is None:
-              raise SystemExit("bootable/recovery is missing from the pinned manifest")
-
-          revision = recovery.get("revision")
-          upstream = recovery.get("upstream")
-          if recovery.get("remote") != "orangefox" or not revision or not upstream:
-              raise SystemExit("invalid pinned bootable/recovery source declaration")
-
-          recovery.set("revision", upstream)
-          tree.write(path, encoding="UTF-8", xml_declaration=True)
-          print(revision)
-          PY
-          )"
           git -C "$manifest_repo" init --initial-branch=main --quiet
           git -C "$manifest_repo" config user.name "OrangeFox CI"
           git -C "$manifest_repo" config user.email "orangefox-ci@localhost"
@@ -253,20 +223,8 @@ jobs:
           heartbeat_pid=$!
           trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
 
-          # The pinned commit is five revisions behind the OrangeFox branch
-          # tip and uses a project-specific depth of 50. Fetch its branch
-          # serially first so a GitLab transport error is visible immediately.
-          repo sync -c -j1 --fail-fast --verbose --retry-fetches=3 \
-            --no-clone-bundle --no-tags --optimized-fetch bootable/recovery
-          git -C bootable/recovery cat-file -e "${recovery_revision}^{commit}"
-
-          # The temporary manifest tracks the advertised branch only during
-          # sync; restore the exact device-tree pinned recovery revision after
-          # the rest of the source tree has been fetched.
           repo sync -c -j2 --retry-fetches=3 \
             --no-clone-bundle --no-tags --optimized-fetch
-          git -C bootable/recovery checkout --detach "$recovery_revision"
-          test "$(git -C bootable/recovery rev-parse HEAD)" = "$recovery_revision"
 
           kill "$heartbeat_pid" 2>/dev/null || true
           trap - EXIT
