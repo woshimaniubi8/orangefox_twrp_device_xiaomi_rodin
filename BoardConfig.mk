@@ -143,6 +143,9 @@ TW_DEFAULT_LANGUAGE := zh_CN
 OF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT := 1
 TW_HAS_MTP := true
 TW_MTP_DEVICE := /dev/mtp_usb
+# This enables the legacy "USB Storage" gadget action. It is deliberately
+# left disabled: OTG is a host-mode, removable-storage workflow and must not
+# expose /data to a connected computer as a block device.
 TW_NO_USB_STORAGE := true
 TW_EXCLUDE_DEFAULT_USB_INIT := true
 TW_INPUT_BLACKLIST := "hbtp_vm"

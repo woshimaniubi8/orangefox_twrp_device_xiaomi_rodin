@@ -77,8 +77,8 @@ check_file "${DEVICE_DIR}/tools/import-global-firmware-inputs.sh"
 check_file "${DEVICE_DIR}/manifests/device-blobs.sha256"
 check_file "${DEVICE_DIR}/manifests/orangefox-fox_14.1-pinned.xml"
 check_sha256 "${DEVICE_DIR}/patches/orangefox-build-make.patch" 5f2d3f43a4d78eee6d560a4a169df30fc95de6fa2ed294e3210e684a641a8329
-check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 97c4fa873791b98a345b04aa4b40859731598c640440c9f7b65ca255e5d26ec7
-check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 4b0a2773e23ef7b8536c48ff0a4728ecda20a271197354d1c34ea926448734b7
+check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 4159fe49b39cfacb3950666f55701b4fa7888fc8ac6add43a6075954d3bdfd82
+check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 38c8ba245974696fb5352040b25fb189486e00f987381a01d45802df1344be96
 
 if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
     if ! python3 "${DEVICE_DIR}/tools/verify-source-manifest.py" "${TOP_DIR}" \
@@ -176,6 +176,9 @@ check_contains "${DEVICE_DIR}/BoardConfig.mk" \
 check_contains "${DEVICE_DIR}/BoardConfig.mk" \
     'OF_USE_DMCTL := 1' \
     "OrangeFox dmctl support is not enabled for FBE Format Data"
+check_contains "${DEVICE_DIR}/recovery/root/system/etc/twrp.flags" \
+    '/dev/block/rodin-usb-otg-unresolved' \
+    "USB OTG must use the dynamic USB-bus resolver sentinel"
 check_contains "${DEVICE_DIR}/recovery/root/init.recovery.bootctl.rc" \
     'service vendor.boot-default /system/bin/hw/android.hardware.boot-service.mtk_recovery' \
     "stock AIDL BootControl recovery service definition missing"
@@ -227,6 +230,7 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
         OF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT \
         fallback_face \
         processKeyChord \
+        Resolve_UsbOtg_Block_Device \
         "skipping logical partition alias" \
         "Decrypted userdata mapper is still present"; do
         search_tree "$marker" "${TOP_DIR}/bootable/recovery" || \

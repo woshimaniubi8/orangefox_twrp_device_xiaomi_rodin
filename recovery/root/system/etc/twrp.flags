@@ -58,7 +58,12 @@
 
 # Removable Storage
 /external_sd        auto  /dev/block/mmcblk1p1  /dev/block/mmcblk0p1     flags=display="MicroSD Card";storage;wipeingui;removable
-/usb_otg            auto  /dev/block/sda1 /dev/block/sda /dev/block/sdd1 flags=display="USB-OTG";storage;wipeingui;removable
+# USB mass-storage device names are assigned dynamically. The recovery source
+# patch discovers only disks whose /sys/block device path is on the USB bus,
+# then prefers their first partition and falls back to the whole disk. The
+# sentinel below prevents TWRP from mistaking a non-USB /dev/block/sdX device
+# for OTG before that resolver runs.
+/usb_otg            auto  /dev/block/rodin-usb-otg-unresolved flags=display="USB-OTG";storage;wipeingui;removable
 
 # Flashable logical partitions
 /system_image	         emmc		/dev/block/mapper/system								  flags=display="System Image";slotselect;backup;flashimg

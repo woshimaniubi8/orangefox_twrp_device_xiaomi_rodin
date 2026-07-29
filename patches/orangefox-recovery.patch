@@ -639,18 +639,20 @@ index c437cc77..57b121af 100644
  	#elif defined(FOX_USE_DMSETUP)
  	if (TWFunc::Path_Exists("/dev/block/mapper/userdata")) {
 diff --git a/partitionmanager.cpp b/partitionmanager.cpp
-index 0ea3a125..9fdbdcbd 100755
+index 0ea3a125..e640d27b 100755
 --- a/partitionmanager.cpp
 +++ b/partitionmanager.cpp
-@@ -25,6 +25,7 @@
+@@ -25,7 +25,9 @@
  #include <sys/stat.h>
  #include <sys/vfs.h>
  #include <unistd.h>
 +#include <algorithm>
  #include <map>
++#include <utility>
  #include <vector>
  #include <dirent.h>
-@@ -4875,13 +4876,25 @@ bool TWPartitionManager::Unmap_Super_Devices() {
+ #include <time.h>
+@@ -4875,13 +4877,25 @@ bool TWPartitionManager::Unmap_Super_Devices() {
  		while ((de = readdir(d)) != NULL) {
  			if (de->d_type == DT_LNK) {
  				std::string partition = de->d_name;
@@ -683,6 +685,166 @@ index 0ea3a125..9fdbdcbd 100755
  				}
  			}
  		}
+@@ -4916,45 +4930,134 @@ bool TWPartitionManager::Check_Pending_Merges() {
+ 	return true;
+ }
+ 
++static bool Is_UsbOtg_Scsi_Disk(const std::string& disk) {
++	char block_device[PATH_MAX];
++	char sysfs_device[PATH_MAX];
++	char resolved_device[PATH_MAX];
++
++	if (disk.size() <= 2 || disk.compare(0, 2, "sd") != 0)
++		return false;
++
++	snprintf(block_device, sizeof(block_device), "/dev/block/%s", disk.c_str());
++	snprintf(sysfs_device, sizeof(sysfs_device), "/sys/block/%s/device", disk.c_str());
++	if (!TWFunc::Path_Exists(block_device) ||
++		realpath(sysfs_device, resolved_device) == NULL)
++		return false;
++
++	// UFS also appears as sdX. Only accept a device whose resolved parent
++	// traverses the USB bus, rather than relying on a volatile sdX name.
++	return strstr(resolved_device, "/usb") != NULL;
++}
++
++static bool Resolve_UsbOtg_Block_Device(std::string* block_device) {
++	DIR* block_directory = opendir("/sys/block");
++	if (block_directory == NULL) {
++		LOGINFO("Unable to scan /sys/block for USB OTG: %s\n", strerror(errno));
++		return false;
++	}
++
++	std::vector<std::string> disks;
++	struct dirent* entry;
++	while ((entry = readdir(block_directory)) != NULL) {
++		if (Is_UsbOtg_Scsi_Disk(entry->d_name))
++			disks.emplace_back(entry->d_name);
++	}
++	closedir(block_directory);
++	std::sort(disks.begin(), disks.end());
++
++	for (const std::string& disk : disks) {
++		char disk_directory[PATH_MAX];
++		snprintf(disk_directory, sizeof(disk_directory), "/sys/block/%s", disk.c_str());
++
++		DIR* partition_directory = opendir(disk_directory);
++		if (partition_directory == NULL)
++			continue;
++
++		std::vector<std::pair<long, std::string>> partitions;
++		while ((entry = readdir(partition_directory)) != NULL) {
++			std::string name = entry->d_name;
++			if (name.compare(0, disk.size(), disk) != 0 || name.size() == disk.size())
++				continue;
++
++			const char* suffix = name.c_str() + disk.size();
++			char* end = NULL;
++			long partition_number = strtol(suffix, &end, 10);
++			if (*suffix == '\0' || *end != '\0')
++				continue;
++
++			char partition_marker[PATH_MAX];
++			snprintf(partition_marker, sizeof(partition_marker),
++					 "/sys/block/%s/%s/partition", disk.c_str(), name.c_str());
++			if (TWFunc::Path_Exists(partition_marker))
++				partitions.emplace_back(partition_number, name);
++		}
++		closedir(partition_directory);
++
++		if (!partitions.empty()) {
++			std::sort(partitions.begin(), partitions.end());
++			*block_device = "/dev/block/" + partitions.front().second;
++		} else {
++			*block_device = "/dev/block/" + disk;
++		}
++		return true;
++	}
++
++	return false;
++}
++
+ void TWPartitionManager::Check_UsbOtg_Status() {
+ 	static bool mtp_was_enabled;
++	static bool mtp_suspended = false;
+ 	static bool usbotg_mounted = false;
+-	static string usbotg_prim = "";
+-	static string usbotg_alt = "";
++	static std::string mounted_device = "";
+ 	static TWPartition* usbotg = Find_Partition_By_Path("usb_otg");
++	std::string resolved_device;
+ 
+-	if (usbotg && !usbotg->Primary_Block_Device.empty()) {
+-		usbotg_prim = usbotg->Primary_Block_Device;
+-		usbotg_alt = usbotg->Alternate_Block_Device;
+-	} else return;
++	if (usbotg == NULL)
++		return;
+ 
+-	if (TWFunc::Path_Exists(usbotg_prim) || (!usbotg_alt.empty() && TWFunc::Path_Exists(usbotg_alt))) {
+-		// Auto-mount only once when usb_otg was connected
+-		if (!usbotg_mounted) goto mount;
+-	} else if (usbotg_mounted) {
+-		// Is seems usb_otg was disconnected, so unmount it
+-		goto unmount;
+-	}
+-	return;
++	if (Resolve_UsbOtg_Block_Device(&resolved_device)) {
++		if (usbotg_mounted && mounted_device == resolved_device)
++			return;
+ 
+-mount:
+-	mtp_was_enabled = TWFunc::Toggle_MTP(false);
+-	usbotg->Mount(true);
+-	usbotg_mounted = true;
+-	if (PageManager::GetCurrentPage() == "filemanagerlist" && DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
+-		gui_changePage("filemanagerlist");
+-	return;
++		if (usbotg_mounted)
++			usbotg->UnMount(false);
++
++		usbotg->Primary_Block_Device = resolved_device;
++		usbotg->Alternate_Block_Device.clear();
++		usbotg->Actual_Block_Device = resolved_device;
++		usbotg->Can_Be_Mounted = true;
++		usbotg->Is_Present = true;
++		if (!mtp_suspended) {
++			mtp_was_enabled = TWFunc::Toggle_MTP(false);
++			mtp_suspended = true;
++		}
++		usbotg_mounted = usbotg->Mount(true);
++		mounted_device = resolved_device;
++		if (PageManager::GetCurrentPage() == "filemanagerlist" &&
++			DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
++			gui_changePage("filemanagerlist");
++		return;
++	}
+ 
+-unmount:
+-	usbotg->UnMount(false);
++	if (usbotg_mounted)
++		usbotg->UnMount(false);
++	usbotg->Primary_Block_Device.clear();
++	usbotg->Alternate_Block_Device.clear();
++	usbotg->Actual_Block_Device.clear();
+ 	usbotg->Is_Present = false;
+ 	usbotg->Size = 0;
+ 	usbotg->Used = 0;
+ 	usbotg->Free = 0;
+ 	usbotg_mounted = false;
+-	if (PageManager::GetCurrentPage() == "filemanagerlist" && DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
++	mounted_device.clear();
++	if (mtp_suspended) {
++		TWFunc::Toggle_MTP(mtp_was_enabled);
++		mtp_suspended = false;
++	}
++	if (PageManager::GetCurrentPage() == "filemanagerlist" &&
++		DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
+ 		gui_changePage("filemanagerlist");
+-	TWFunc::Toggle_MTP(mtp_was_enabled);
+ }
+ 
+ std::pair<string, string> TWPartitionManager::Get_Partition_Checksums(TWPartition* twrpPart) {
 diff --git a/twrp.cpp b/twrp.cpp
 index c9fdc572..f74435d2 100644
 --- a/twrp.cpp

@@ -1,7 +1,54 @@
 # orangefox_twrp_device_xiaomi_rodin
 ### Orangefox device tree for rodin (Redmi Turbo 4 / Poco X7 Pro)
 
-Chinese build and porting documentation:
+
+## Device and firmware base
+
+- Model: `24129RT7CC`
+- SoC: MediaTek MT6899 / Dimensity 8400 Ultra
+- Kernel: `6.6.77-android15-8-gca30f3b4bef6-abogki440974771-4k`
+- Layout: A/B, dynamic partitions, virtual A/B userspace snapshots
+- Recovery location: vendor boot header v4, named `recovery` fragment
+- Vendor base: `OS3.0.303.0.WOJCNXM`, Android 15 / API 35
+- Installed system reported by the owner: Android 16 HyperOS
+- Display: `1220x2712`; OrangeFox theme coordinate space: `1080x2400`
+
+Support:
+
+-  **Data decrypt (FBE)**
+-  **USB OTG storage**
+-  **Battery and temperature display**
+-  **Screen brightness adjustment**
+-  **Multiple languages(include Chinese)**
+
+The vendor metadata remains Android 15 because the Android 16 system uses an
+Android 15 vendor/GKI base.
+
+USB OTG resolves devices dynamically from `/sys/block`: only SCSI disks whose
+parent path contains `/usb` are eligible, their first partition is preferred,
+and the raw disk is used only when no partition exists. This prevents a fixed
+`/dev/block/sda1` assumption from mounting a non-USB device. FAT and exFAT
+continue to use the recovery's existing filesystem support. NTFS-3G is
+excluded until its compressed payload can be shown to remain inside the
+device's validated 60 MB combined-ramdisk limit. The Mount menu's "USB
+Storage" gadget action remains disabled because it is unrelated to host-mode
+OTG and would export phone storage to a computer.
+
+For the first on-device test, boot recovery, attach one OTG flash drive, and
+verify both the mount and the selected block device before performing any write:
+
+```bash
+adb shell 'lsmod | grep -E "xhci|mtu3|usb"'
+adb shell 'for d in /sys/block/sd*/device; do readlink -f "$d"; done 2>/dev/null | grep /usb'
+adb shell 'ls -l /dev/block/sd* 2>/dev/null; mount | grep usb_otg'
+adb shell 'grep -E "USB OTG|usb_otg|ntfs|exfat" /tmp/recovery.log | tail -80'
+```
+
+The expected mount point is `/usb_otg`. Test FAT and exFAT media. A drive that
+draws more current than the phone can supply requires a powered hub; that is a
+power limitation, not a filesystem failure.
+
+Build and porting documentation:
 
 - [`manifests/README_CN.md`](manifests/README_CN.md)
 - [`docs/BUILD_FROM_SOURCE_CN.md`](docs/BUILD_FROM_SOURCE_CN.md)
@@ -15,20 +62,6 @@ The vendor boot layout, MediaTek HALs, firmware, and kernel modules follow
 [`KSN2redawew/android_device_xiaomi_rodin-twrp`](https://github.com/KSN2redawew/android_device_xiaomi_rodin-twrp)
 at commit `50c9afc`. Firmware-specific boot data comes from the supplied
 Android 16 HyperOS partition dump.
-
-## Device and firmware base
-
-- Model: `24129RT7CC`
-- SoC: MediaTek MT6899 / Dimensity 8400 Ultra
-- Kernel: `6.6.77-android15-8-gca30f3b4bef6-abogki440974771-4k`
-- Layout: A/B, dynamic partitions, virtual A/B userspace snapshots
-- Recovery location: vendor boot header v4, named `recovery` fragment
-- Vendor base: `OS3.0.303.0.WOJCNXM`, Android 15 / API 35
-- Installed system reported by the owner: Android 16 HyperOS
-- Display: `1220x2712`; OrangeFox theme coordinate space: `1080x2400`
-
-The vendor metadata remains Android 15 because the Android 16 system uses an
-Android 15 vendor/GKI base.
 
 ## Vendor boot layout
 
