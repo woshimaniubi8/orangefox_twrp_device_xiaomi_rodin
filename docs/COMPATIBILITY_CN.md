@@ -26,7 +26,26 @@ rodin-OrangeFox-OS3.0.303.0-WOJCNXM-dual-touch-test.img
 
 界面中显示的“3.0.303”不足以确认兼容性，必须比较完整 vendor fingerprint、kernel ABI 和触摸控制器。
 
-## 2. 为什么 3.0.4.0 不能直接使用
+## 2. disable-avb 变体
+
+每个固件基线会同时生成标准镜像和 `disable-avb` 镜像。例如 CN 基线为：
+
+```text
+OrangeFox-R12.0-Unofficial-rodin-system-compatible.img
+OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img
+```
+
+后者保留相同的 DTB、type-2 recovery fragment、64 MiB 分区大小和重新计算的 vendor_boot AVB hash footer。它会修改 type-1 platform fragment 中供正常 Android 启动使用的 first-stage `fstab.*`：删除 fs_mgr flags 字段中的 `avb`、`avb=*` 和 `avb_keys=*`，保留所有分区路径、`slotselect`、`logical`、`first_stage_mount` 及其他挂载参数。它还向 vendor bootconfig 添加以下覆盖项：
+
+```text
+androidboot.vbmeta.device_state := "unlocked"
+androidboot.verifiedbootstate := "orange"
+androidboot.flash.locked := "0"
+```
+
+该变体用于 LK 已允许 fastboot 刷写、但 Android 仍收到 locked boot 属性，或需跳过 Android first-stage `fs_mgr` 对逻辑分区的 AVB 挂载校验的设备。它不会解锁 Bootloader，也不会改变 Boot ROM 或 LK 的验签与回滚策略；vendor_boot 自身仍保留有效的 AVB hash footer。应先保留标准镜像，并仅在确认需要上述绕过时刷入对应固件基线的 `disable-avb` 镜像。
+
+## 3. 为什么 3.0.4.0 不能直接使用
 
 最终 IMG 内置了 303 固件的以下内容：
 
@@ -40,7 +59,7 @@ rodin-OrangeFox-OS3.0.303.0-WOJCNXM-dual-touch-test.img
 
 要支持 `3.0.4.0`，应从该版本重新提取一整套输入并生成独立镜像，不能只替换版本字符串或单个 `vendor_boot`。
 
-## 3. 同为 303 但没有触摸
+## 4. 同为 303 但没有触摸
 
 已从 303 `vendor_dlkm` 确认 rodin 同时提供两套触摸驱动：
 
@@ -73,7 +92,7 @@ adb shell su -c \
 
 若 driver/input/probe 显示 FocalTech，应核对最终 IMG 来自通过 preflight 的完整设备树，并收集 Recovery 中的 module probe、input 和 TouchReport 日志。新源码产物完成触摸、FBE、系统重启验证前不要作为稳定版发布。
 
-## 4. “自动进入官方 Recovery”的排查顺序
+## 5. “自动进入官方 Recovery”的排查顺序
 
 1. 确认对方 Bootloader 确实已解锁，而不只是能进入 fastboot。
 2. 核对对方收到的 IMG SHA-256，排除传输或重命名错误。
@@ -84,7 +103,7 @@ adb shell su -c \
 
 不要让测试者同时刷两个槽位，也不要让其刷 `vendor_ramdisk_recovery.cpio` 或 recovery-only 中间镜像。
 
-## 5. 收集兼容性报告
+## 6. 收集兼容性报告
 
 设备处于 OrangeFox/TWRP 且有 ADB 时，在主机源码根目录执行：
 
@@ -102,7 +121,7 @@ device/xiaomi/rodin/tools/collect-compat-report.sh \
 
 脚本只执行读取操作，不解密 `/data`、不修改分区、不刷机。报告可能包含序列号、fingerprint 和日志，公开上传前应检查隐私信息。
 
-## 6. 为新固件制作版本
+## 7. 为新固件制作版本
 
 至少收集以下同一槽位、同一 OTA 版本的输入：
 

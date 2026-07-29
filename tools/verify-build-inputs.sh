@@ -170,6 +170,30 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
 check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
     'pruned platform still contains a device VINTF fragment under /system' \
     "vendor_boot repacker does not reject device VINTF fragments under /system"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'DEFAULT_DISABLE_AVB_OUTPUT_IMAGE' \
+    "disable-avb vendor_boot output is not defined"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    '--vendor_bootconfig "$bootconfig"' \
+    "disable-avb vendor_boot bootconfig is not packed"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'androidboot.vbmeta.device_state := "unlocked"' \
+    "disable-avb vendor_boot does not override vbmeta device state"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'androidboot.verifiedbootstate := "orange"' \
+    "disable-avb vendor_boot does not override verified boot state"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'androidboot.flash.locked := "0"' \
+    "disable-avb vendor_boot does not override flash lock state"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'strip_first_stage_avb_flags' \
+    "disable-avb vendor_boot does not remove first-stage AVB fs_mgr flags"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'platform first-stage fstab' \
+    "disable-avb vendor_boot does not target the type-1 platform fstab"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'verify_image --image "$disable_avb_verify_image"' \
+    "disable-avb vendor_boot AVB footer is not verified"
 check_contains "${DEVICE_DIR}/BoardConfig.mk" \
     'OF_USE_AIDL_BOOT_CONTROL := 1' \
     "OrangeFox is not configured to use AIDL BootControl"

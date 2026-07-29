@@ -11,11 +11,13 @@ case "${FIRMWARE_VARIANT}" in
         STOCK_RAMDISK="${DEVICE_DIR}/prebuilt/vendor_ramdisk00"
         STOCK_RAMDISK_SHA256="192977d50a121f7a5ddfab0212488ef0dbb0326cad802ce9d664649967a9845c"
         DEFAULT_OUTPUT_IMAGE="${PRODUCT_OUT}/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img"
+        DEFAULT_DISABLE_AVB_OUTPUT_IMAGE="${PRODUCT_OUT}/OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img"
         ;;
     global)
         STOCK_RAMDISK="${DEVICE_DIR}/prebuilt/global/vendor_ramdisk00"
         STOCK_RAMDISK_SHA256="349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731"
         DEFAULT_OUTPUT_IMAGE="${PRODUCT_OUT}/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img"
+        DEFAULT_DISABLE_AVB_OUTPUT_IMAGE="${PRODUCT_OUT}/OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img"
         ;;
     *)
         echo "unsupported RODIN_FIRMWARE_VARIANT: ${FIRMWARE_VARIANT} (expected cn or global)" >&2
@@ -24,19 +26,25 @@ case "${FIRMWARE_VARIANT}" in
 esac
 
 OUTPUT_IMAGE="${2:-${DEFAULT_OUTPUT_IMAGE}}"
+DISABLE_AVB_OUTPUT_IMAGE="${3:-${DEFAULT_DISABLE_AVB_OUTPUT_IMAGE}}"
 STOCK_DTB="${DEVICE_DIR}/prebuilt/dtb/mt6899-rodin.dtb"
 RECOVERY_LZ4="${PRODUCT_OUT}/obj/PACKAGING/vendor_ramdisk_fragments_intermediates/recovery.cpio.lz4"
 LZ4="${PRODUCT_OUT%/target/product/rodin}/host/linux-x86/bin/lz4"
 MKBOOTIMG="${PRODUCT_OUT%/target/product/rodin}/host/linux-x86/bin/mkbootimg"
 MKBOOTFS="${PRODUCT_OUT%/target/product/rodin}/host/linux-x86/bin/mkbootfs"
 AVBTOOL="${PRODUCT_OUT%/target/product/rodin}/host/linux-x86/bin/avbtool"
+UNPACK_BOOTIMG="${TOP_DIR}/system/tools/mkbootimg/unpack_bootimg.py"
 
-for file in "$STOCK_RAMDISK" "$STOCK_DTB" "$RECOVERY_LZ4" "$LZ4" "$MKBOOTIMG" "$MKBOOTFS" "$AVBTOOL"; do
+for file in "$STOCK_RAMDISK" "$STOCK_DTB" "$RECOVERY_LZ4" "$LZ4" "$MKBOOTIMG" "$MKBOOTFS" "$AVBTOOL" "$UNPACK_BOOTIMG"; do
     if [ ! -f "$file" ]; then
         echo "missing required build input: $file" >&2
         exit 1
     fi
 done
+command -v python3 >/dev/null 2>&1 || {
+    echo "missing required host command: python3" >&2
+    exit 1
+}
 
 check_sha256() {
     local expected="$1"
@@ -62,7 +70,14 @@ platform_cpio="${work_dir}/platform.cpio"
 platform_root="${work_dir}/platform-root"
 platform_pruned_cpio="${work_dir}/platform-pruned.cpio"
 platform_pruned_lz4="${work_dir}/platform-pruned.cpio.lz4"
+disable_avb_platform_root="${work_dir}/platform-disable-avb-root"
+disable_avb_platform_cpio="${work_dir}/platform-disable-avb.cpio"
+disable_avb_platform_lz4="${work_dir}/platform-disable-avb.cpio.lz4"
 unsigned_image="${work_dir}/vendor_boot.img"
+disable_avb_unsigned_image="${work_dir}/vendor_boot-disable-avb.img"
+disable_avb_bootconfig="${work_dir}/vendor_boot-disable-avb.bootconfig"
+disable_avb_inspect_dir="${work_dir}/vendor_boot-disable-avb-inspect"
+disable_avb_verify_image="${work_dir}/vendor_boot.img"
 
 "$LZ4" -d -f "$RECOVERY_LZ4" "$recovery_cpio" >/dev/null
 "$LZ4" -d -f "$STOCK_RAMDISK" "$platform_cpio" >/dev/null
@@ -162,41 +177,163 @@ if [ "$platform_module_count" -ne 244 ]; then
     exit 1
 fi
 
-"$MKBOOTFS" -d "${PRODUCT_OUT}/system" "$platform_root" > "$platform_pruned_cpio"
-"$LZ4" -l -12 --favor-decSpeed -f "$platform_pruned_cpio" "$platform_pruned_lz4" >/dev/null
+pack_ramdisk() {
+    local root="$1" cpio="$2" lz4="$3"
 
-total_ramdisk_size=$(( $(stat -c %s "$platform_pruned_lz4") + $(stat -c %s "$RECOVERY_LZ4") ))
-if [ "$total_ramdisk_size" -ge 60000000 ]; then
-    echo "combined vendor ramdisk is $total_ramdisk_size bytes; expected less than 60000000" >&2
-    exit 1
-fi
+    "$MKBOOTFS" -d "${PRODUCT_OUT}/system" "$root" > "$cpio"
+    "$LZ4" -l -12 --favor-decSpeed -f "$cpio" "$lz4" >/dev/null
+}
 
-"$MKBOOTIMG" \
-    --dtb "$STOCK_DTB" \
-    --base 0x3fff8000 \
-    --pagesize 4096 \
-    --vendor_cmdline "bootopt=64S3,32N2,64N2 erofs.reserved_pages=64" \
-    --header_version 4 \
-    --kernel_offset 0x00008000 \
-    --ramdisk_offset 0x26f08000 \
-    --tags_offset 0x07c88000 \
-    --dtb_offset 0x07c88000 \
-    --vendor_ramdisk "$platform_pruned_lz4" \
-    --ramdisk_type RECOVERY \
-    --ramdisk_name recovery \
-    --vendor_ramdisk_fragment "$RECOVERY_LZ4" \
-    --vendor_boot "$unsigned_image"
+check_combined_ramdisk_size() {
+    local label="$1" platform_lz4="$2" recovery_lz4="$3" total
+
+    total=$(( $(stat -c %s "$platform_lz4") + $(stat -c %s "$recovery_lz4") ))
+    if [ "$total" -ge 60000000 ]; then
+        echo "${label} combined vendor ramdisk is $total bytes; expected less than 60000000" >&2
+        exit 1
+    fi
+    printf '%s\n' "$total"
+}
+
+strip_first_stage_avb_flags() {
+    local root="$1" fstab_file sanitized_file fstab_count=0
+
+    while IFS= read -r -d '' fstab_file; do
+        fstab_count=$((fstab_count + 1))
+        sanitized_file="${fstab_file}.disable-avb"
+        awk '
+            /^[[:space:]]*#/ || NF < 5 { print; next }
+            {
+                count = split($5, options, ",")
+                rebuilt = ""
+                for (i = 1; i <= count; i++) {
+                    option = options[i]
+                    if (option == "avb" || option ~ /^avb=/ || option ~ /^avb_keys=/) {
+                        continue
+                    }
+                    rebuilt = rebuilt == "" ? option : rebuilt "," option
+                }
+                $5 = rebuilt == "" ? "defaults" : rebuilt
+                print
+            }
+        ' "$fstab_file" > "$sanitized_file"
+        mv -f "$sanitized_file" "$fstab_file"
+    done < <(find "$root/first_stage_ramdisk" -maxdepth 1 -type f -name 'fstab.*' -print0)
+
+    if [ "$fstab_count" -eq 0 ]; then
+        echo "no first-stage fstab files found below $root" >&2
+        exit 1
+    fi
+}
+
+assert_no_first_stage_avb_flags() {
+    local root="$1" fstab_file fstab_count=0
+
+    while IFS= read -r -d '' fstab_file; do
+        fstab_count=$((fstab_count + 1))
+        if ! awk '
+            /^[[:space:]]*#/ || NF < 5 { next }
+            {
+                count = split($5, options, ",")
+                for (i = 1; i <= count; i++) {
+                    option = options[i]
+                    if (option == "avb" || option ~ /^avb=/ || option ~ /^avb_keys=/) {
+                        bad = 1
+                    }
+                }
+            }
+            END { exit bad ? 1 : 0 }
+        ' "$fstab_file"; then
+            echo "first-stage AVB flag remains in $fstab_file" >&2
+            exit 1
+        fi
+    done < <(find "$root/first_stage_ramdisk" -maxdepth 1 -type f -name 'fstab.*' -print0)
+
+    if [ "$fstab_count" -eq 0 ]; then
+        echo "no first-stage fstab files found below $root" >&2
+        exit 1
+    fi
+}
+
+pack_ramdisk "$platform_root" "$platform_pruned_cpio" "$platform_pruned_lz4"
+
+# Keep the standard image byte-for-byte independent of this override. The
+# alternate image removes only fs_mgr AVB options from the stock type-1
+# platform first-stage fstab. This is the fragment used for normal Android
+# boot; all block paths and other mount flags stay unchanged.
+mkdir -p "$disable_avb_platform_root"
+cp -a "$platform_root/." "$disable_avb_platform_root/"
+strip_first_stage_avb_flags "$disable_avb_platform_root"
+assert_no_first_stage_avb_flags "$disable_avb_platform_root"
+pack_ramdisk "$disable_avb_platform_root" "$disable_avb_platform_cpio" "$disable_avb_platform_lz4"
+
+total_ramdisk_size="$(check_combined_ramdisk_size standard "$platform_pruned_lz4" "$RECOVERY_LZ4")"
+disable_avb_total_ramdisk_size="$(check_combined_ramdisk_size disable-avb "$disable_avb_platform_lz4" "$RECOVERY_LZ4")"
+
+build_vendor_boot() {
+    local image="$1" bootconfig="$2" platform_lz4="$3" recovery_lz4="$4"
+    local -a mkbootimg_args=(
+        --dtb "$STOCK_DTB"
+        --base 0x3fff8000
+        --pagesize 4096
+        --vendor_cmdline "bootopt=64S3,32N2,64N2 erofs.reserved_pages=64"
+        --header_version 4
+        --kernel_offset 0x00008000
+        --ramdisk_offset 0x26f08000
+        --tags_offset 0x07c88000
+        --dtb_offset 0x07c88000
+        --vendor_ramdisk "$platform_lz4"
+        --ramdisk_type RECOVERY
+        --ramdisk_name recovery
+        --vendor_ramdisk_fragment "$recovery_lz4"
+    )
+
+    if [ -n "$bootconfig" ]; then
+        mkbootimg_args+=(--vendor_bootconfig "$bootconfig")
+    fi
+    mkbootimg_args+=(--vendor_boot "$image")
+    "$MKBOOTIMG" "${mkbootimg_args[@]}"
+    "$AVBTOOL" add_hash_footer \
+        --image "$image" \
+        --partition_size 67108864 \
+        --partition_name vendor_boot \
+        --prop "com.android.build.vendor_boot.fingerprint:${fingerprint}"
+}
 
 fingerprint="$(cat "${PRODUCT_OUT}/build_fingerprint.txt")"
-"$AVBTOOL" add_hash_footer \
-    --image "$unsigned_image" \
-    --partition_size 67108864 \
-    --partition_name vendor_boot \
-    --prop "com.android.build.vendor_boot.fingerprint:${fingerprint}"
+build_vendor_boot "$unsigned_image" "" "$platform_pruned_lz4" "$RECOVERY_LZ4"
+
+# LK was replaced to permit fastboot flashing on affected devices, but Android
+# still receives LK's locked-state boot properties. A bootconfig assignment
+# with := takes precedence over the same property supplied earlier in boot.
+cat > "$disable_avb_bootconfig" <<'EOF'
+androidboot.vbmeta.device_state := "unlocked"
+androidboot.verifiedbootstate := "orange"
+androidboot.flash.locked := "0"
+EOF
+build_vendor_boot "$disable_avb_unsigned_image" "$disable_avb_bootconfig" \
+    "$disable_avb_platform_lz4" "$RECOVERY_LZ4"
 
 mkdir -p "$(dirname "$OUTPUT_IMAGE")"
 mv -f "$unsigned_image" "$OUTPUT_IMAGE"
 sha256sum "$OUTPUT_IMAGE" > "${OUTPUT_IMAGE}.sha256"
+mv -f "$disable_avb_unsigned_image" "$DISABLE_AVB_OUTPUT_IMAGE"
+sha256sum "$DISABLE_AVB_OUTPUT_IMAGE" > "${DISABLE_AVB_OUTPUT_IMAGE}.sha256"
+
+# avbtool resolves the hash descriptor's partition name relative to the image
+# being checked. Validate this variant under its actual partition filename,
+# rather than accidentally reading the standard product/vendor_boot.img alias.
+test "$(stat -c %s "$DISABLE_AVB_OUTPUT_IMAGE")" = 67108864
+cp -fp "$DISABLE_AVB_OUTPUT_IMAGE" "$disable_avb_verify_image"
+"$AVBTOOL" verify_image --image "$disable_avb_verify_image"
+python3 "$UNPACK_BOOTIMG" --boot_img "$DISABLE_AVB_OUTPUT_IMAGE" \
+    --out "$disable_avb_inspect_dir" >/dev/null
+for property in \
+    'androidboot.vbmeta.device_state := "unlocked"' \
+    'androidboot.verifiedbootstate := "orange"' \
+    'androidboot.flash.locked := "0"'; do
+    grep -qxF "$property" "$disable_avb_inspect_dir/bootconfig"
+done
 
 # OrangeFox creates these names before this post-build step. Replace both
 # whole-image outputs so an ordinary vendorbootimage build cannot leave a
@@ -212,9 +349,11 @@ rm -f \
     "${PRODUCT_OUT}/OrangeFox-R12.0-Unofficial-rodin.zip.md5"
 
 printf 'system-compatible vendor_boot: %s\n' "$OUTPUT_IMAGE"
+printf 'disable-avb vendor_boot: %s\n' "$DISABLE_AVB_OUTPUT_IMAGE"
 printf 'firmware variant: %s\n' "$FIRMWARE_VARIANT"
 printf 'pruned stock platform fragment: %s bytes (LZ4, %s stock modules)\n' \
     "$(stat -c %s "$platform_pruned_lz4")" "$platform_module_count"
 printf 'recovery fragment: %s bytes (LZ4, %s modules)\n' "$(stat -c %s "$RECOVERY_LZ4")" "$module_count"
 printf 'combined vendor ramdisk: %s bytes\n' "$total_ramdisk_size"
+printf 'disable-avb combined vendor ramdisk: %s bytes\n' "$disable_avb_total_ramdisk_size"
 cat "${OUTPUT_IMAGE}.sha256"

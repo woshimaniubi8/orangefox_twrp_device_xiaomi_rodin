@@ -54,10 +54,12 @@ jobs:
           case "${RODIN_FIRMWARE_VARIANT}" in
             cn)
               image_name="OrangeFox-R12.0-Unofficial-rodin-system-compatible.img"
+              disable_avb_image_name="OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img"
               firmware_baseline="CN OS3.0.303.0.WOJCNXM"
               ;;
             global)
               image_name="OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img"
+              disable_avb_image_name="OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img"
               firmware_baseline="Global OS3.0.301.0.WOJMIXM"
               ;;
             *)
@@ -69,6 +71,7 @@ jobs:
           echo "artifact_name=orangefox-rodin-release-${RODIN_FIRMWARE_VARIANT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
           echo "firmware_baseline=${firmware_baseline}" >> "$GITHUB_OUTPUT"
           echo "image_name=${image_name}" >> "$GITHUB_OUTPUT"
+          echo "disable_avb_image_name=${disable_avb_image_name}" >> "$GITHUB_OUTPUT"
 
       - name: Remove stale build worktree
         shell: bash
@@ -322,37 +325,55 @@ jobs:
         shell: bash
         env:
           IMAGE_NAME: ${{ steps.metadata.outputs.image_name }}
+          DISABLE_AVB_IMAGE_NAME: ${{ steps.metadata.outputs.disable_avb_image_name }}
         run: |
           set -euo pipefail
           product="$ORANGEFOX_TOP/out/target/product/rodin"
           image="$product/$IMAGE_NAME"
+          disable_avb_image="$product/$DISABLE_AVB_IMAGE_NAME"
           avbtool="$ORANGEFOX_TOP/out/host/linux-x86/bin/avbtool"
 
           test -f "$image"
           test -f "${image}.sha256"
+          test -f "$disable_avb_image"
+          test -f "${disable_avb_image}.sha256"
           test -x "$avbtool"
           test "$(stat -c %s "$image")" = "67108864"
+          test "$(stat -c %s "$disable_avb_image")" = "67108864"
           sha256sum --check --strict "${image}.sha256"
+          sha256sum --check --strict "${disable_avb_image}.sha256"
           test -f "$product/vendor_boot.img"
           cmp -s "$image" "$product/vendor_boot.img"
           "$avbtool" verify_image --image "$image"
+
+          # AVB descriptors name the partition vendor_boot. Validate the
+          # alternate image through that filename so avbtool hashes this image,
+          # not the standard product/vendor_boot.img alias.
+          avb_validation_dir="$(mktemp -d)"
+          trap 'rm -rf "$avb_validation_dir"' EXIT
+          ln -s "$disable_avb_image" "$avb_validation_dir/vendor_boot.img"
+          "$avbtool" verify_image --image "$avb_validation_dir/vendor_boot.img"
 
       - name: Collect release artifact
         shell: bash
         env:
           FIRMWARE_BASELINE: ${{ steps.metadata.outputs.firmware_baseline }}
           IMAGE_NAME: ${{ steps.metadata.outputs.image_name }}
+          DISABLE_AVB_IMAGE_NAME: ${{ steps.metadata.outputs.disable_avb_image_name }}
         run: |
           set -euo pipefail
           product="$ORANGEFOX_TOP/out/target/product/rodin"
           image="$product/$IMAGE_NAME"
+          disable_avb_image="$product/$DISABLE_AVB_IMAGE_NAME"
 
           rm -rf "$GITHUB_WORKSPACE/artifacts"
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
           cp -fp "$image" "$GITHUB_WORKSPACE/artifacts/$IMAGE_NAME"
+          cp -fp "$disable_avb_image" "$GITHUB_WORKSPACE/artifacts/$DISABLE_AVB_IMAGE_NAME"
           (
             cd "$GITHUB_WORKSPACE/artifacts"
             sha256sum "$IMAGE_NAME" > "${IMAGE_NAME}.sha256"
+            sha256sum "$DISABLE_AVB_IMAGE_NAME" > "${DISABLE_AVB_IMAGE_NAME}.sha256"
           )
 
           cat > "$GITHUB_WORKSPACE/artifacts/build-info-${RODIN_FIRMWARE_VARIANT}.md" <<EOF
@@ -363,7 +384,7 @@ jobs:
           - Firmware profile: ${FIRMWARE_BASELINE}
           - GitHub run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          This artifact contains the validated, system-compatible vendor_boot image.
+          This artifact contains validated standard and disable-avb system-compatible vendor_boot images.
           EOF
 
       - name: Upload release artifact
@@ -420,7 +441,9 @@ jobs:
           cd release-artifacts
           for image in \
             OrangeFox-R12.0-Unofficial-rodin-system-compatible.img \
-            OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img
+            OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img \
+            OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img \
+            OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img
           do
             test -f "${image}"
             test -f "${image}.sha256"
@@ -445,14 +468,18 @@ jobs:
           - Global firmware profile: OS3.0.301.0.WOJMIXM
           - GitHub run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          This prerelease contains validated system-compatible vendor_boot images for both firmware profiles.
+          This prerelease contains standard and disable-avb system-compatible vendor_boot images for both firmware profiles.
           EOF
 
           gh release create "$release_tag" \
             "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img" \
             "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img.sha256" \
+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img" \
+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img.sha256" \
             "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img" \
             "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img.sha256" \
+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img" \
+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img.sha256" \
             --repo "$GH_REPO" \
             --target "$GITHUB_SHA" \
             --title "OrangeFox rodin CI ${GITHUB_SHA::7}" \

@@ -192,12 +192,21 @@ only creates an intermediate recovery-only layout and must not be flashed.
 ## GitHub Actions
 
 Pushing to `main` starts the `Build and publish OrangeFox rodin` workflow. It
-initializes `repo` from the device tree's pinned 14.1 manifest, builds the CN
-`OS3.0.303.0.WOJCNXM` profile, validates the complete 64 MiB AVB image, uploads
-the image and SHA-256 as an Actions artifact, and creates an immutable
-prerelease tagged with the workflow run and source commit. `workflow_dispatch`
-can build the Global `OS3.0.301.0.WOJMIXM` profile and can suppress publishing
-for a test run. The two firmware profiles are not interchangeable.
+initializes `repo` from the device tree's pinned 14.1 manifest and builds CN
+`OS3.0.303.0.WOJCNXM` and Global `OS3.0.301.0.WOJMIXM` profiles independently.
+Each profile uploads a standard 64 MiB system-compatible image and a
+`disable-avb` variant with SHA-256 files. The release job creates an immutable
+prerelease containing all four images, tagged with the workflow run and source
+commit. `workflow_dispatch` can suppress publishing for a test run. The two
+firmware profiles are not interchangeable.
+
+The alternate image retains a valid vendor_boot AVB hash footer, adds bootconfig
+assignments that override Android's view of bootloader state, and removes only
+the `avb`, `avb=*`, and `avb_keys=*` fs_mgr flags from the type-1 platform
+first-stage fstab used for normal Android boot. It is for devices whose LK has
+already permitted flashing but still reports a locked state to Android, or that
+need to skip Android first-stage AVB mount validation. It does not unlock the
+bootloader or alter Boot ROM/LK verification policy.
 
 The build job uses GitHub-hosted `ubuntu-24.04`; no self-hosted runner needs to
 be registered. It deletes Android SDKs, language tool caches, browsers and

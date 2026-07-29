@@ -280,6 +280,26 @@ RODIN_FIRMWARE_VARIANT=global OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
   device/xiaomi/rodin/build-lowmem.sh vendorbootimage
 ```
 
+每次成功构建都会生成同一固件 profile 的标准镜像和 `disable-avb` 变体：
+
+```text
+# CN OS3.0.303.0.WOJCNXM
+OrangeFox-R12.0-Unofficial-rodin-system-compatible.img
+OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img
+
+# Global OS3.0.301.0.WOJMIXM
+OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img
+OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img
+```
+
+`disable-avb` 会以 vendor bootconfig 覆盖 Android 可见的 locked/verified boot 属性，
+并删除 type-1 platform first-stage fstab 中的 `avb`、`avb=*`、`avb_keys=*` fs_mgr flags；
+vendor_boot 仍保留有效 AVB hash footer。它不会解锁 Bootloader 或改变 Boot ROM/LK 的
+验签策略。正常设备应使用标准镜像，只有 LK 已允许刷写但 Android 错误报告 locked，或需
+跳过 Android first-stage 挂载校验时才使用对应基线的该变体。详细属性和限制见
+[COMPATIBILITY_CN.md](COMPATIBILITY_CN.md#2-disable-avb-变体)。
+```
+
 低内存机器可以把 `OF_BUILD_JOBS` 降到 `1` 或 `2`。构建过程中不要清理 `/tmp`，也不要删除 `out/target/product/rodin/recovery`。
 
 成功后只使用：
