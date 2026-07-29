@@ -15,13 +15,12 @@ on:
           - cn
           - global
       build_jobs:
-        description: Parallel build jobs on the GitHub-hosted runner
+        description: Parallel build jobs on the GitHub-hosted runner (single-job only)
         required: true
-        default: "2"
+        default: "1"
         type: choice
         options:
           - "1"
-          - "2"
       publish:
         description: Create a prerelease after a successful manual build
         required: true
@@ -42,7 +41,7 @@ env:
   ORANGEFOX_SYNC_REVISION: "11e4406b2bd1de939a26b6bfbad7e371cc3b1fa7"
   ORANGEFOX_TOP: ${{ github.workspace }}/OrangeFox
   RODIN_FIRMWARE_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.firmware_variant || 'cn' }}
-  OF_BUILD_JOBS: ${{ github.event_name == 'workflow_dispatch' && inputs.build_jobs || '2' }}
+  OF_BUILD_JOBS: ${{ github.event_name == 'workflow_dispatch' && inputs.build_jobs || '1' }}
 
 jobs:
   build:
@@ -103,11 +102,10 @@ jobs:
           rm -f "$GITHUB_WORKSPACE/ci-gitconfig" \
             "$GITHUB_WORKSPACE/orangefox-build.log"
 
-      - name: Reclaim GitHub-hosted runner storage
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash "$GITHUB_WORKSPACE/device-tree/.github/scripts/reclaim-github-hosted-space.sh"
+      # This is the cleaner used by Klee's known-working hosted workflow.
+      # It removes substantially more hosted-image payload than apt cleanup.
+      - name: Free hosted-runner disk space
+        uses: rokibhasansagar/slimhub_actions@main
 
       - name: Install host packages
         shell: bash
@@ -288,14 +286,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The initial guard reserves space for the source checkout while
-          # .repo still exists. This guard catches runner-image changes after
-          # that metadata has been removed and before Soong writes out/.
+          # slimhub reclaims about 138 GiB on the standard hosted image. A
+          # full pinned source checkout leaves about 45 GiB after .repo is
+          # removed; this low-memory, single-job build requires a 35 GiB floor
+          # before Soong starts writing out/.
           available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
-          required_kib=$((70 * 1024 * 1024))
+          required_kib=$((35 * 1024 * 1024))
           if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
             available_gib=$((available_kib / 1024 / 1024))
-            echo "::error::OrangeFox rodin needs at least 70 GiB free after .repo cleanup; found ${available_gib} GiB."
+            echo "::error::OrangeFox rodin needs at least 35 GiB free after .repo cleanup; found ${available_gib} GiB."
             exit 1
           fi
 
@@ -312,14 +311,29 @@ jobs:
           FOX_VIRTUAL_AB_DEVICE: "1"
           OF_FORCE_PREBUILT_KERNEL: "1"
           OF_LOW_MEMORY_BUILD: "1"
-          GOMEMLIMIT: "12GiB"
+          GOMEMLIMIT: "3GiB"
           GOGC: "20"
           _JAVA_OPTIONS: "-Xmx3g"
           USE_CCACHE: "0"
+          NINJA_ARGS: "-j1 -l1"
+          SOONG_UI_NINJA_ARGS: "-j1 -l1"
         run: |
           set -euo pipefail
+          (
+            while sleep 60; do
+              date -u '+%Y-%m-%dT%H:%M:%SZ build heartbeat'
+              df -h "$GITHUB_WORKSPACE"
+              free -h
+            done
+          ) &
+          heartbeat_pid=$!
+          trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
+
           device/xiaomi/rodin/build-lowmem.sh vendorbootimage 2>&1 | \
             tee "$GITHUB_WORKSPACE/orangefox-build.log"
+
+          kill "$heartbeat_pid" 2>/dev/null || true
+          trap - EXIT
 
       - name: Validate release image
         shell: bash
