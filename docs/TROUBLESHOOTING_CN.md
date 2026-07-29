@@ -139,6 +139,18 @@ adb shell 'file /twres/fonts/MiSans.ttf'
 
 必须确认最终刷入的是 `OrangeFox-...-system-compatible.img`。正常 Android boot 只选择 type-1 platform fragment；它必须保留 stock first-stage init、linker、libc、fstab、SELinux、firmware 和全部 244 个模块。
 
+若 pstore 中出现下列组合：
+
+```text
+device-mapper: verity: ... metadata block ... is corrupted
+reboot: Restarting system with command 'dm-verity device corrupted'
+```
+
+则故障位于当前槽位的 `/system`/super 完整性校验，不是 `/data` 格式化，也不是 Recovery
+进程崩溃。此时 `make_f2fs` 的失败不会写入 userdata，更不会损坏 system。使用与当前地区、
+版本和槽位匹配的完整官方 fastboot 包修复 system/super 与相应 vbmeta；不要在 Recovery 中
+关闭或绕过 dm-verity。
+
 立即回退：
 
 ```bash
@@ -166,6 +178,23 @@ partitions` 发生在 `Check_Pending_Merges()` 内、真正擦除 `/data` 之前
 正常日志应出现 `skipping logical partition alias: vendor`，随后才是
 `checking for merges` 和实际的 Data wipe。若仍出现
 `removing dynamic partition: vendor` 后立刻报错，说明运行的是未应用此 patch 的旧镜像。
+
+### `make_f2fs: Error: In use by the system`
+
+这与 `Unable to unmap dynamic partitions` 不同：若日志已出现 `checking for merges`，
+随后显示物理 `/data` 设备（rodin 常为 `/dev/block/sdc92`）的 `make_f2fs` 被占用，说明
+FBE 解密创建的 `/dev/block/mapper/userdata` 仍持有该物理设备。
+
+当前构建在 `make_f2fs` 前必须显示：
+
+```text
+OrangeFox: running dmctl before formatting...
+```
+
+随后才可以继续格式化。没有这行说明仍在运行旧镜像，或 `OF_USE_DMCTL := 1` 未进入构建。
+若出现 `Unable to release decrypted userdata` 或 `Decrypted userdata is still busy`，Recovery
+会安全中止；保存该次 `/tmp/recovery.log`，不要手工删除 `/dev/block/mapper` 节点，也不要
+擦写 `super` 来规避。
 
 如果已经重启 Recovery 后仍失败，必须采集那一次失败的完整日志；不要复用刷包前的
 日志。连接 ADB 后执行：

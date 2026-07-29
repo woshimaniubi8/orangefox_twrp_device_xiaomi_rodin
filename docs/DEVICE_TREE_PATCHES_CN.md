@@ -28,6 +28,12 @@
 `skipping logical partition alias: vendor`，说明已命中该保护；若仍出现
 `removing dynamic partition: vendor`，刷入的仍是旧镜像或共享 patch 未应用。
 
+FBE 已解密后的 `userdata` mapper 与动态分区不是同一类对象，不能由
+`Unmap_Super_Devices()` 的兜底扫描删除。rodin 在 `BoardConfig.mk` 启用
+`OF_USE_DMCTL := 1`，将 `dmctl` 放入 Recovery；共享 patch 只在确认格式化 `/data` 时
+删除 `/dev/block/mapper/userdata`。命令失败或节点在最多一秒后仍存在时会终止格式化，
+不会继续向仍被映射占用的物理 userdata 块设备执行 `make_f2fs`。
+
 ## 应用
 
 先保存完整设备树和现有工作，再在 OrangeFox 源码根目录执行。补丁文件必须在目标设备树外部，因为应用前目标树中尚不存在该文件。

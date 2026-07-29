@@ -146,6 +146,7 @@ recovery patch 包含：
 - 解密页面显示前加载默认简体中文。
 - MiSans 主题选择项和 SIH6887 震动节点支持。
 - Virtual A/B `Format Data` 时保留 `vendor -> vendor_a` 等无槽位 mapper 别名，避免在 pending-merge 检查前错误删除别名而中止格式化；`*_a`/`*_b` 与 `-cow` 的精确清理不变。
+- Android 16 FBE 已解密后，先用 Recovery 内置 `dmctl` 释放 `/dev/block/mapper/userdata`，确认映射消失后才格式化物理 userdata 分区；删除失败会中止操作。
 
 在干净源码中执行：
 

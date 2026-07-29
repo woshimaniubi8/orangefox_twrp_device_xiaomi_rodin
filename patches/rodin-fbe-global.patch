@@ -42,7 +42,7 @@ index 963844f..8aaa90d 100644
          "libbinder_ndk",
          "liblog",
 diff --git a/BoardConfig.mk b/BoardConfig.mk
-index 70dfc37..e24e9a1 100644
+index 70dfc37..52e2764 100644
 --- a/BoardConfig.mk
 +++ b/BoardConfig.mk
 @@ -80,6 +80,9 @@ BOARD_USES_METADATA_PARTITION := true
@@ -55,6 +55,17 @@ index 70dfc37..e24e9a1 100644
  AB_OTA_PARTITIONS += \
      boot \
      init_boot \
+@@ -157,6 +160,9 @@ BOARD_HAS_LARGE_FILESYSTEM := true
+ # Android 16 FBE uses the device's MiTEE KeyMint and Gatekeeper services.
+ TW_INCLUDE_CRYPTO := true
+ TW_INCLUDE_FBE := true
+ TW_INCLUDE_FBE_METADATA_DECRYPT := true
++# Format Data must release the FBE dm-default-key mapping before mkfs writes
++# the physical userdata block device.
++OF_USE_DMCTL := 1
+ TW_USE_FSCRYPT_POLICY := 2
+ TW_RECOVERY_ADDITIONAL_RELINK_LIBRARY_FILES = \
+     $(TARGET_OUT_SHARED_LIBRARIES)/libtrusty.so \
 diff --git a/README.md b/README.md
 index 7762c83..59e071e 100644
 --- a/README.md
@@ -647,7 +658,8 @@ index a5eddb7..88cd248 100755
  check_file "${DEVICE_DIR}/manifests/device-blobs.sha256"
  check_file "${DEVICE_DIR}/manifests/orangefox-fox_14.1-pinned.xml"
  check_sha256 "${DEVICE_DIR}/patches/orangefox-build-make.patch" 5f2d3f43a4d78eee6d560a4a169df30fc95de6fa2ed294e3210e684a641a8329
- check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" d36b4ef38558113296fe4353d8374f5b8f700d829531f2b7139b74c7f7fdcfd9
+-check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" d36b4ef38558113296fe4353d8374f5b8f700d829531f2b7139b74c7f7fdcfd9
++check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 97c4fa873791b98a345b04aa4b40859731598c640440c9f7b65ca255e5d26ec7
 -check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 24054779376a52e037454daba105d5153202d92104ddf535f65fd58c06e3abe5
 +check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 4b0a2773e23ef7b8536c48ff0a4728ecda20a271197354d1c34ea926448734b7
  
@@ -662,7 +674,7 @@ index a5eddb7..88cd248 100755
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/scp.ko" ebae9554467e148256cfbab90f0b6d7943d2818ae0cf09bad8aec650bbd99310
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/goodix_core_rodin.ko" 3c2fe7db061743134b715e5a7c361690c3fa36cfacb9c15c1e0bb122e51ac966
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/focaltech_touch_rodin.ko" da967ce3f94ecc81153ee91f7e06a2b48eda0526b857688016ef660844bc70b2
-@@ -132,6 +140,57 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
+@@ -132,6 +140,60 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
  check_contains "${DEVICE_DIR}/fox_callback.sh" \
      'focaltech_touch_rodin.ko|goodix_core_rodin.ko' \
      "FocalTech module is not retained in the final ramdisk"
@@ -699,6 +711,9 @@ index a5eddb7..88cd248 100755
 +check_contains "${DEVICE_DIR}/BoardConfig.mk" \
 +    'OF_USE_AIDL_BOOT_CONTROL := 1' \
 +    "OrangeFox is not configured to use AIDL BootControl"
++check_contains "${DEVICE_DIR}/BoardConfig.mk" \
++    'OF_USE_DMCTL := 1' \
++    "OrangeFox dmctl support is not enabled for FBE Format Data"
 +check_contains "${DEVICE_DIR}/recovery/root/init.recovery.bootctl.rc" \
 +    'service vendor.boot-default /system/bin/hw/android.hardware.boot-service.mtk_recovery' \
 +    "stock AIDL BootControl recovery service definition missing"

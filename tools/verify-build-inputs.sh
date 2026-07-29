@@ -77,7 +77,7 @@ check_file "${DEVICE_DIR}/tools/import-global-firmware-inputs.sh"
 check_file "${DEVICE_DIR}/manifests/device-blobs.sha256"
 check_file "${DEVICE_DIR}/manifests/orangefox-fox_14.1-pinned.xml"
 check_sha256 "${DEVICE_DIR}/patches/orangefox-build-make.patch" 5f2d3f43a4d78eee6d560a4a169df30fc95de6fa2ed294e3210e684a641a8329
-check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" acba573c50c0c7c97518db71920dede0d8db34475f4573de71c8358be45eb922
+check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 97c4fa873791b98a345b04aa4b40859731598c640440c9f7b65ca255e5d26ec7
 check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 4b0a2773e23ef7b8536c48ff0a4728ecda20a271197354d1c34ea926448734b7
 
 if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
@@ -173,6 +173,9 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
 check_contains "${DEVICE_DIR}/BoardConfig.mk" \
     'OF_USE_AIDL_BOOT_CONTROL := 1' \
     "OrangeFox is not configured to use AIDL BootControl"
+check_contains "${DEVICE_DIR}/BoardConfig.mk" \
+    'OF_USE_DMCTL := 1' \
+    "OrangeFox dmctl support is not enabled for FBE Format Data"
 check_contains "${DEVICE_DIR}/recovery/root/init.recovery.bootctl.rc" \
     'service vendor.boot-default /system/bin/hw/android.hardware.boot-service.mtk_recovery' \
     "stock AIDL BootControl recovery service definition missing"
@@ -224,7 +227,8 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
         OF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT \
         fallback_face \
         processKeyChord \
-        "skipping logical partition alias"; do
+        "skipping logical partition alias" \
+        "Decrypted userdata mapper is still present"; do
         search_tree "$marker" "${TOP_DIR}/bootable/recovery" || \
             fail "OrangeFox source patch marker missing: $marker"
     done

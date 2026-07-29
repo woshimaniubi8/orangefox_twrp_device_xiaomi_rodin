@@ -606,40 +606,38 @@ index 1f02b296..efb82ecd 100644
  # whether to wipe /metadata after formatting data
  ifeq ($(OF_WIPE_METADATA_AFTER_DATAFORMAT),1)
     ifeq ($(TW_INCLUDE_FBE_METADATA_DECRYPT),true)
-diff --git a/twrp.cpp b/twrp.cpp
-index c9fdc572..f74435d2 100644
---- a/twrp.cpp
-+++ b/twrp.cpp
-@@ -250,6 +250,12 @@ static void process_recovery_mode(twrpAdbBuFifo* adb_bu_fifo, bool skip_decrypti
+diff --git a/partition.cpp b/partition.cpp
+index c437cc77..57b121af 100644
+--- a/partition.cpp
++++ b/partition.cpp
+@@ -2701,10 +2701,24 @@ bool TWPartition::Wipe_F2FS() {
+ 	#endif
  
- #ifdef TW_INCLUDE_CRYPTO
- 	android::keystore::copySqliteDb();
-+#endif
-+#ifdef OF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT
-+	// The decrypt page blocks before encrypted settings can be loaded. Apply the
-+	// compiled default to the already-loaded GUI package before opening it.
-+	PageManager::LoadLanguage(DataManager::GetStrValue("tw_language"));
-+	GUIConsole::Translate_Now();
- #endif
- 	Decrypt_Page(skip_decryption, datamedia);
- 
-@@ -403,10 +409,12 @@ static bool Fox_CheckReload_Themes() {
-   || TWFunc::Fox_Property_Get("orangefox.mount_to_decrypt") == "1") {
- 	DataManager::SetValue(FOX_ENCRYPTED_DEVICE, "1");
-     }
--#if defined(FOX_ALLOW_EARLY_SETTINGS_LOAD) && defined(FOX_SETTINGS_ROOT_DIRECTORY)
--  return false;
--#else
--  return (TWFunc::Path_Exists(FOX_THEME_PATH) || TWFunc::Path_Exists(FOX_NAVBAR_PATH));
-+	#if defined(OF_SKIP_POST_DECRYPT_THEME_RELOAD)
-+	  return false;
-+	#elif defined(FOX_ALLOW_EARLY_SETTINGS_LOAD) && defined(FOX_SETTINGS_ROOT_DIRECTORY)
-+	  return false;
-+	#else
-+	  return (TWFunc::Path_Exists(FOX_THEME_PATH) || TWFunc::Path_Exists(FOX_NAVBAR_PATH));
- #endif
- }
- 
+ 	#ifdef OF_USE_DMCTL
+-	if (TWFunc::Path_Exists("/dev/block/mapper/userdata")) {
++	if (Mount_Point == "/data" && TWFunc::Path_Exists("/dev/block/mapper/userdata")) {
+ 		LOGINFO("OrangeFox: running dmctl before formatting...\n");
+-		TWFunc::Exec_Cmd("dmctl delete userdata", false);
+-		usleep(32768);
++		if (TWFunc::Exec_Cmd("dmctl delete userdata", false) != 0) {
++			LOGERR("Unable to remove decrypted userdata mapper; refusing to format %s.\n",
++					Actual_Block_Device.c_str());
++			gui_print("Unable to release decrypted userdata; format aborted.\n");
++			return false;
++		}
++		for (unsigned int retry = 0; retry < 20 &&
++				TWFunc::Path_Exists("/dev/block/mapper/userdata"); retry++) {
++			usleep(50000);
++		}
++		if (TWFunc::Path_Exists("/dev/block/mapper/userdata")) {
++			LOGERR("Decrypted userdata mapper is still present; refusing to format %s.\n",
++					Actual_Block_Device.c_str());
++			gui_print("Decrypted userdata is still busy; format aborted.\n");
++			return false;
++		}
+ 	}
+ 	#elif defined(FOX_USE_DMSETUP)
+ 	if (TWFunc::Path_Exists("/dev/block/mapper/userdata")) {
 diff --git a/partitionmanager.cpp b/partitionmanager.cpp
 index 0ea3a125..9fdbdcbd 100755
 --- a/partitionmanager.cpp
@@ -685,3 +683,37 @@ index 0ea3a125..9fdbdcbd 100755
  				}
  			}
  		}
+diff --git a/twrp.cpp b/twrp.cpp
+index c9fdc572..f74435d2 100644
+--- a/twrp.cpp
++++ b/twrp.cpp
+@@ -250,6 +250,12 @@ static void process_recovery_mode(twrpAdbBuFifo* adb_bu_fifo, bool skip_decrypti
+ 
+ #ifdef TW_INCLUDE_CRYPTO
+ 	android::keystore::copySqliteDb();
++#endif
++#ifdef OF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT
++	// The decrypt page blocks before encrypted settings can be loaded. Apply the
++	// compiled default to the already-loaded GUI package before opening it.
++	PageManager::LoadLanguage(DataManager::GetStrValue("tw_language"));
++	GUIConsole::Translate_Now();
+ #endif
+ 	Decrypt_Page(skip_decryption, datamedia);
+ 
+@@ -403,10 +409,12 @@ static bool Fox_CheckReload_Themes() {
+   || TWFunc::Fox_Property_Get("orangefox.mount_to_decrypt") == "1") {
+ 	DataManager::SetValue(FOX_ENCRYPTED_DEVICE, "1");
+     }
+-#if defined(FOX_ALLOW_EARLY_SETTINGS_LOAD) && defined(FOX_SETTINGS_ROOT_DIRECTORY)
+-  return false;
+-#else
+-  return (TWFunc::Path_Exists(FOX_THEME_PATH) || TWFunc::Path_Exists(FOX_NAVBAR_PATH));
++	#if defined(OF_SKIP_POST_DECRYPT_THEME_RELOAD)
++	  return false;
++	#elif defined(FOX_ALLOW_EARLY_SETTINGS_LOAD) && defined(FOX_SETTINGS_ROOT_DIRECTORY)
++	  return false;
++	#else
++	  return (TWFunc::Path_Exists(FOX_THEME_PATH) || TWFunc::Path_Exists(FOX_NAVBAR_PATH));
+ #endif
+ }
+ 

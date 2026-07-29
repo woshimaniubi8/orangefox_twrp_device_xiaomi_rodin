@@ -6,23 +6,8 @@ on:
       - main
   workflow_dispatch:
     inputs:
-      firmware_variant:
-        description: Firmware profile to build
-        required: true
-        default: cn
-        type: choice
-        options:
-          - cn
-          - global
-      build_jobs:
-        description: Parallel build jobs on the GitHub-hosted runner (single-job only)
-        required: true
-        default: "1"
-        type: choice
-        options:
-          - "1"
       publish:
-        description: Create a prerelease after a successful manual build
+        description: Create a prerelease with vendor_boot images
         required: true
         default: true
         type: boolean
@@ -31,17 +16,14 @@ permissions:
   contents: read
 
 concurrency:
-  # Keep the existing CN key so the next push cancels queued legacy
-  # self-hosted work. A manual Global dispatch has an isolated key.
-  group: orangefox-rodin-${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && inputs.firmware_variant == 'global' && '-global' || '' }}
+  group: orangefox-rodin-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  ORANGEFOX_BRANCH: "14.1"
-  ORANGEFOX_SYNC_REVISION: "11e4406b2bd1de939a26b6bfbad7e371cc3b1fa7"
+  ORANGEFOX_BRANCH: '14.1'
+  ORANGEFOX_SYNC_REVISION: '11e4406b2bd1de939a26b6bfbad7e371cc3b1fa7'
   ORANGEFOX_TOP: ${{ github.workspace }}/OrangeFox
-  RODIN_FIRMWARE_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.firmware_variant || 'cn' }}
-  OF_BUILD_JOBS: ${{ github.event_name == 'workflow_dispatch' && inputs.build_jobs || '1' }}
+  OF_BUILD_JOBS: '1'
 
 jobs:
   build:
@@ -49,12 +31,12 @@ jobs:
     # then verify the observed capacity before building at low concurrency.
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    outputs:
-      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
-      firmware_baseline: ${{ steps.metadata.outputs.firmware_baseline }}
-      firmware_variant: ${{ steps.metadata.outputs.firmware_variant }}
-      image_name: ${{ steps.metadata.outputs.image_name }}
-      release_tag: ${{ steps.metadata.outputs.release_tag }}
+    strategy:
+      fail-fast: false
+      matrix:
+        firmware_variant: [cn, global]
+    env:
+      RODIN_FIRMWARE_VARIANT: ${{ matrix.firmware_variant }}
 
     steps:
       - name: Check out device tree
@@ -84,12 +66,9 @@ jobs:
               ;;
           esac
 
-          short_sha="${GITHUB_SHA::7}"
-          echo "artifact_name=orangefox-rodin-${RODIN_FIRMWARE_VARIANT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=orangefox-rodin-release-${RODIN_FIRMWARE_VARIANT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
           echo "firmware_baseline=${firmware_baseline}" >> "$GITHUB_OUTPUT"
-          echo "firmware_variant=${RODIN_FIRMWARE_VARIANT}" >> "$GITHUB_OUTPUT"
           echo "image_name=${image_name}" >> "$GITHUB_OUTPUT"
-          echo "release_tag=rodin-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${short_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Remove stale build worktree
         shell: bash
@@ -104,7 +83,7 @@ jobs:
 
       # This is the cleaner used by Klee's known-working hosted workflow.
       # It removes substantially more hosted-image payload than apt cleanup.
-      - name: Free hosted-runner disk space
+      - name: Free disk space
         uses: rokibhasansagar/slimhub_actions@main
 
       - name: Install host packages
@@ -125,7 +104,7 @@ jobs:
           test -x "${java_home}/bin/java"
           echo "JAVA_HOME=${java_home}" >> "$GITHUB_ENV"
 
-      - name: Fetch device blobs from Git LFS
+      - name: Fetch device blobs
         shell: bash
         run: |
           set -euo pipefail
@@ -138,7 +117,7 @@ jobs:
             exit 1
           fi
 
-      - name: Ensure build swap
+      - name: Setup build swap
         shell: bash
         run: |
           set -euo pipefail
@@ -146,7 +125,7 @@ jobs:
           MIN_SWAP_GIB=12 \
             bash "$GITHUB_WORKSPACE/device-tree/.github/scripts/setup-swap.sh"
 
-      - name: Check GitHub-hosted runner capacity
+      - name: Check runner capacity
         shell: bash
         run: |
           set -euo pipefail
@@ -182,7 +161,7 @@ jobs:
           chmod +x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Sync pinned OrangeFox sources
+      - name: Sync OrangeFox sources
         shell: bash
         run: |
           set -euo pipefail
@@ -200,7 +179,7 @@ jobs:
           git config --global protocol.file.allow always
           # GitLab occasionally resets long HTTP/2 fetches from hosted runners.
           # Keep the transport reproducible and tolerate slow pack transfers.
-          git config --global http.version HTTP/1.1
+          # git config --global http.version HTTP/1.1
           git config --global http.lowSpeedLimit 1
           git config --global http.lowSpeedTime 600
 
@@ -221,13 +200,13 @@ jobs:
           heartbeat_pid=$!
           trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
 
-          repo sync -c -j2 --retry-fetches=3 \
+          repo sync -c -j4 --retry-fetches=3 \
             --no-clone-bundle --no-tags --optimized-fetch
 
           kill "$heartbeat_pid" 2>/dev/null || true
           trap - EXIT
 
-      - name: Apply pinned OrangeFox setup patches
+      - name: Apply OrangeFox setup patches
         shell: bash
         run: |
           set -euo pipefail
@@ -263,14 +242,14 @@ jobs:
             "$GITHUB_WORKSPACE/device-tree/" \
             "$ORANGEFOX_TOP/device/xiaomi/rodin/"
 
-      - name: Apply source patches and verify inputs
+      - name: Apply source patches & verify
         shell: bash
         run: |
           set -euo pipefail
           "$ORANGEFOX_TOP/device/xiaomi/rodin/tools/apply-orangefox-patches.sh" \
             "$ORANGEFOX_TOP"
 
-      - name: Drop sync metadata before compilation
+      - name: Drop sync metadata
         shell: bash
         run: |
           set -euo pipefail
@@ -301,24 +280,28 @@ jobs:
           du -sh "$ORANGEFOX_TOP"
           df -h "$GITHUB_WORKSPACE"
 
-      - name: Build system-compatible vendor boot image
+      - name: Build vendor_boot image
         shell: bash
         working-directory: ${{ env.ORANGEFOX_TOP }}
         env:
-          ALLOW_MISSING_DEPENDENCIES: "true"
+          ALLOW_MISSING_DEPENDENCIES: 'true'
           FOX_BUILD_DEVICE: rodin
-          FOX_AB_DEVICE: "1"
-          FOX_VIRTUAL_AB_DEVICE: "1"
-          OF_FORCE_PREBUILT_KERNEL: "1"
-          OF_LOW_MEMORY_BUILD: "1"
-          GOMEMLIMIT: "3GiB"
-          GOGC: "20"
-          _JAVA_OPTIONS: "-Xmx3g"
-          USE_CCACHE: "0"
-          NINJA_ARGS: "-j1 -l1"
-          SOONG_UI_NINJA_ARGS: "-j1 -l1"
+          FOX_AB_DEVICE: '1'
+          FOX_VIRTUAL_AB_DEVICE: '1'
+          OF_FORCE_PREBUILT_KERNEL: '1'
+          OF_LOW_MEMORY_BUILD: '1'
+          GOMEMLIMIT: '3GiB'
+          GOGC: '20'
+          _JAVA_OPTIONS: '-Xmx3g'
+          USE_CCACHE: '0'
         run: |
           set -euo pipefail
+          build_jobs="$(nproc)"
+          export OF_BUILD_JOBS="$build_jobs"
+          export NINJA_ARGS="-j${build_jobs} -l${build_jobs}"
+          export SOONG_UI_NINJA_ARGS="$NINJA_ARGS"
+          printf 'Using %s Ninja jobs\n' "$build_jobs"
+
           (
             while sleep 60; do
               date -u '+%Y-%m-%dT%H:%M:%SZ build heartbeat'
@@ -372,15 +355,15 @@ jobs:
             sha256sum "$IMAGE_NAME" > "${IMAGE_NAME}.sha256"
           )
 
-          cat > "$GITHUB_WORKSPACE/artifacts/release-notes.md" <<EOF
-          Automated OrangeFox build for rodin.
+          cat > "$GITHUB_WORKSPACE/artifacts/build-info-${RODIN_FIRMWARE_VARIANT}.md" <<EOF
+          Automated OrangeFox ${RODIN_FIRMWARE_VARIANT} build for rodin.
 
           - Device-tree commit: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
           - OrangeFox branch: ${ORANGEFOX_BRANCH}
           - Firmware profile: ${FIRMWARE_BASELINE}
           - GitHub run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          This release contains only the validated, system-compatible vendor_boot image.
+          This artifact contains the validated, system-compatible vendor_boot image.
           EOF
 
       - name: Upload release artifact
@@ -395,7 +378,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: orangefox-rodin-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          name: orangefox-rodin-logs-${{ matrix.firmware_variant }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             orangefox-build.log
             OrangeFox/out/logs
@@ -423,34 +406,55 @@ jobs:
       contents: write
 
     steps:
-      - name: Download release artifact
+      - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.build.outputs.artifact_name }}
+          pattern: orangefox-rodin-release-*-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-artifacts
+          merge-multiple: true
 
-      - name: Verify downloaded files
+      - name: Verify images
         shell: bash
-        env:
-          IMAGE_NAME: ${{ needs.build.outputs.image_name }}
         run: |
           set -euo pipefail
           cd release-artifacts
-          sha256sum --check --strict "${IMAGE_NAME}.sha256"
+          for image in \
+            OrangeFox-R12.0-Unofficial-rodin-system-compatible.img \
+            OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img
+          do
+            test -f "${image}"
+            test -f "${image}.sha256"
+            sha256sum --check --strict "${image}.sha256"
+          done
 
       - name: Create prerelease
         shell: bash
         env:
-          FIRMWARE_VARIANT: ${{ needs.build.outputs.firmware_variant }}
           GH_TOKEN: ${{ github.token }}
-          IMAGE_NAME: ${{ needs.build.outputs.image_name }}
-          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release create "$RELEASE_TAG" \
-            "release-artifacts/$IMAGE_NAME" \
-            "release-artifacts/${IMAGE_NAME}.sha256" \
+          release_tag="rodin-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA::7}"
+          notes="$GITHUB_WORKSPACE/release-notes.md"
+          cat > "$notes" <<EOF
+          Automated OrangeFox build for rodin.
+
+          - Device-tree commit: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
+          - OrangeFox branch: ${ORANGEFOX_BRANCH}
+          - CN firmware profile: OS3.0.303.0.WOJCNXM
+          - Global firmware profile: OS3.0.301.0.WOJMIXM
+          - GitHub run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          This prerelease contains validated system-compatible vendor_boot images for both firmware profiles.
+          EOF
+
+          gh release create "$release_tag" \
+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img" \
+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img.sha256" \
+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img" \
+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img.sha256" \
+            --repo "$GH_REPO" \
             --target "$GITHUB_SHA" \
-            --title "OrangeFox rodin ${FIRMWARE_VARIANT} CI ${GITHUB_SHA::7}" \
-            --notes-file release-artifacts/release-notes.md \
+            --title "OrangeFox rodin CI ${GITHUB_SHA::7}" \
+            --notes-file "$notes" \
             --prerelease

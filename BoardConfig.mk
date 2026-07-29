@@ -158,6 +158,9 @@ BOARD_HAS_LARGE_FILESYSTEM := true
 TW_INCLUDE_CRYPTO := true
 TW_INCLUDE_FBE := true
 TW_INCLUDE_FBE_METADATA_DECRYPT := true
+# Format Data must release the FBE dm-default-key mapping before mkfs writes
+# the physical userdata block device.
+OF_USE_DMCTL := 1
 TW_USE_FSCRYPT_POLICY := 2
 TW_RECOVERY_ADDITIONAL_RELINK_LIBRARY_FILES = \
     $(TARGET_OUT_SHARED_LIBRARIES)/libtrusty.so \
