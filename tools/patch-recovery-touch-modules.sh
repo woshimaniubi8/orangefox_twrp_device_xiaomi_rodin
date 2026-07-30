@@ -47,10 +47,21 @@ patch_return_zero() {
         exit 1
     fi
 
-    PATCH_OFFSET="$offset" PATCH_HEX="$RETURN_ZERO_HEX" \
-        perl -0777 -pi -e \
-        'substr($_, $ENV{PATCH_OFFSET}, 8) = pack("H*", $ENV{PATCH_HEX})' \
-        "$file"
+    # This script is also invoked by BOARD_RECOVERY_IMAGE_PREPARE, where
+    # Android's PATH interposer rejects perl. python3 is a controlled Android
+    # build tool and writes only the checked eight-byte instruction sequence.
+    python3 - "$file" "$offset" "$RETURN_ZERO_HEX" <<'PY'
+import sys
+
+path, offset_text, patch_hex = sys.argv[1:]
+offset = int(offset_text, 0)
+patch = bytes.fromhex(patch_hex)
+if len(patch) != 8:
+    raise SystemExit("unexpected recovery module patch size")
+with open(path, "r+b") as module:
+    module.seek(offset)
+    module.write(patch)
+PY
     [[ "$(read_hex "$file" "$offset")" == "$RETURN_ZERO_HEX" ]]
     printf 'patched %s at 0x%x\n' "$label" "$offset"
 }
@@ -71,10 +82,19 @@ restore_default_thp() {
         exit 1
     fi
 
-    PATCH_OFFSET="$offset" PATCH_HEX="$ENABLE_THP_HEX" \
-        perl -0777 -pi -e \
-        'substr($_, $ENV{PATCH_OFFSET}, 4) = pack("H*", $ENV{PATCH_HEX})' \
-        "$file"
+    python3 - "$file" "$offset" "$ENABLE_THP_HEX" <<'PY'
+import sys
+
+path, offset_text, patch_hex = sys.argv[1:]
+offset = int(offset_text, 0)
+patch = bytes.fromhex(patch_hex)
+if len(patch) != 4:
+    raise SystemExit("unexpected Goodix THP patch size")
+with open(path, "r+b") as module:
+    module.seek(offset)
+    module.write(patch)
+PY
+    [[ "$(od -An -v -tx1 -j "$offset" -N 4 "$file" | tr -d ' \n')" == "$ENABLE_THP_HEX" ]]
     echo "restored goodix:default_thp raw-frame path at 0x12e08"
 }
 

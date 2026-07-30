@@ -152,7 +152,8 @@ recovery patch 包含：
 - Global OS3.0.301.0.WOJMIXM 必须设置 `RODIN_FIRMWARE_VARIANT=global`。它使用自己的
   6.6.89 platform ramdisk；最终打包还会替换 7 个 ABI 相关的触摸、haptic 和 eSE 模块，
   并在 Make 复制 `recovery/root` 前生成已修补的模块源目录，避免产品复制顺序覆盖 Global
-  模块。该目录应用 Global 固定偏移的 SCP/Goodix/FocalTech Recovery patch。repacker 会验证其中的
+  模块。该目录应用 Global 固定偏移的 SCP/Goodix/FocalTech Recovery patch；该 patch 使用
+  Android 构建环境允许的 `python3`，不依赖被 Soong PATH 限制的 `perl`。repacker 会验证其中的
   Type-C/OTG 模块及 `vbus_switch`，并将最终 Recovery 的 7 个模块逐字节比对为已修补的
   Global 输入，防止 CN recovery fragment 被误用；DTB 与 CN 基线完全相同，仍会移除 xHCI 的
   `mediatek,usb-offload` 属性。

@@ -173,6 +173,13 @@ check_contains "${DEVICE_DIR}/BoardConfig.mk" \
 check_contains "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
     'GLOBAL_SCP_STOCK_SHA256' \
     "Global touch patch hashes are missing"
+check_contains "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
+    'python3 - "$file" "$offset" "$RETURN_ZERO_HEX"' \
+    "Recovery module patcher does not use the Android-compatible Python tool"
+if grep -qE '^[[:space:]]*perl[[:space:]]' \
+        "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh"; then
+    fail "Recovery module patcher uses perl, which Android PATH rejects during image assembly"
+fi
 check_contains "${DEVICE_DIR}/Android.bp" \
     'name: "rodin_android.hardware.secure_element-V1-ndk"' \
     "Recovery secure-element prebuilt module is missing"

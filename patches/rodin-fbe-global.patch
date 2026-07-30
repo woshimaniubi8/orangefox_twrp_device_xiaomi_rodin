@@ -259,7 +259,7 @@ index 2f227ef..4b54819 100644
  不能直接加载原始 `scp.ko`。实机 pstore 已确认它会在缺少 SCP reserved-memory 的 Recovery 环境中于 `scp_region_info_init()` 触发 kernel panic。
  
 diff --git a/docs/BUILD_FROM_SOURCE_CN.md b/docs/BUILD_FROM_SOURCE_CN.md
-index 9613a69..ae9b8d6 100644
+index 9613a69..ca5d7fe 100644
 --- a/docs/BUILD_FROM_SOURCE_CN.md
 +++ b/docs/BUILD_FROM_SOURCE_CN.md
 @@ -85,10 +85,9 @@ rodin 在删除 `.repo` 后，源码与完整 `out/` 的构建峰值仍约为 83
@@ -276,7 +276,7 @@ index 9613a69..ae9b8d6 100644
  
  只有 `main` 上成功的构建会创建 prerelease。其他 ref 的手动构建仍会上传
  artifact，但不会向仓库发布 release。
-@@ -145,6 +144,23 @@ recovery patch 包含：
+@@ -145,6 +144,24 @@ recovery patch 包含：
  - rodin 解密后禁止完整 GUI package 重建，避免 recovery `SIGSEGV`。
  - 解密页面显示前加载默认简体中文。
  - MiSans 主题选择项和 SIH6887 震动节点支持。
@@ -288,7 +288,8 @@ index 9613a69..ae9b8d6 100644
 +- Global OS3.0.301.0.WOJMIXM 必须设置 `RODIN_FIRMWARE_VARIANT=global`。它使用自己的
 +  6.6.89 platform ramdisk；最终打包还会替换 7 个 ABI 相关的触摸、haptic 和 eSE 模块，
 +  并在 Make 复制 `recovery/root` 前生成已修补的模块源目录，避免产品复制顺序覆盖 Global
-+  模块。该目录应用 Global 固定偏移的 SCP/Goodix/FocalTech Recovery patch。repacker 会验证其中的
++  模块。该目录应用 Global 固定偏移的 SCP/Goodix/FocalTech Recovery patch；该 patch 使用
++  Android 构建环境允许的 `python3`，不依赖被 Soong PATH 限制的 `perl`。repacker 会验证其中的
 +  Type-C/OTG 模块及 `vbus_switch`，并将最终 Recovery 的 7 个模块逐字节比对为已修补的
 +  Global 输入，防止 CN recovery fragment 被误用；DTB 与 CN 基线完全相同，仍会移除 xHCI 的
 +  `mediatek,usb-offload` 属性。
@@ -1035,7 +1036,7 @@ index 2ab0354..75a8fc6 100755
          --pagesize 4096
          --vendor_cmdline "bootopt=64S3,32N2,64N2 erofs.reserved_pages=64"
 diff --git a/tools/patch-recovery-touch-modules.sh b/tools/patch-recovery-touch-modules.sh
-index 2ee711a..f5f8b0b 100755
+index 2ee711a..645b786 100755
 --- a/tools/patch-recovery-touch-modules.sh
 +++ b/tools/patch-recovery-touch-modules.sh
 @@ -3,6 +3,7 @@
@@ -1059,7 +1060,53 @@ index 2ee711a..f5f8b0b 100755
  
  read_hex() {
      od -An -v -tx1 -j "$2" -N 8 "$1" | tr -d ' \n'
-@@ -71,6 +78,22 @@ restore_default_thp() {
+@@ -40,10 +47,21 @@ patch_return_zero() {
+         exit 1
+     fi
+ 
+-    PATCH_OFFSET="$offset" PATCH_HEX="$RETURN_ZERO_HEX" \
+-        perl -0777 -pi -e \
+-        'substr($_, $ENV{PATCH_OFFSET}, 8) = pack("H*", $ENV{PATCH_HEX})' \
+-        "$file"
++    # This script is also invoked by BOARD_RECOVERY_IMAGE_PREPARE, where
++    # Android's PATH interposer rejects perl. python3 is a controlled Android
++    # build tool and writes only the checked eight-byte instruction sequence.
++    python3 - "$file" "$offset" "$RETURN_ZERO_HEX" <<'PY'
++import sys
++
++path, offset_text, patch_hex = sys.argv[1:]
++offset = int(offset_text, 0)
++patch = bytes.fromhex(patch_hex)
++if len(patch) != 8:
++    raise SystemExit("unexpected recovery module patch size")
++with open(path, "r+b") as module:
++    module.seek(offset)
++    module.write(patch)
++PY
+     [[ "$(read_hex "$file" "$offset")" == "$RETURN_ZERO_HEX" ]]
+     printf 'patched %s at 0x%x\n' "$label" "$offset"
+ }
+@@ -64,13 +82,38 @@ restore_default_thp() {
+         exit 1
+     fi
+ 
+-    PATCH_OFFSET="$offset" PATCH_HEX="$ENABLE_THP_HEX" \
+-        perl -0777 -pi -e \
+-        'substr($_, $ENV{PATCH_OFFSET}, 4) = pack("H*", $ENV{PATCH_HEX})' \
+-        "$file"
++    python3 - "$file" "$offset" "$ENABLE_THP_HEX" <<'PY'
++import sys
++
++path, offset_text, patch_hex = sys.argv[1:]
++offset = int(offset_text, 0)
++patch = bytes.fromhex(patch_hex)
++if len(patch) != 4:
++    raise SystemExit("unexpected Goodix THP patch size")
++with open(path, "r+b") as module:
++    module.seek(offset)
++    module.write(patch)
++PY
++    [[ "$(od -An -v -tx1 -j "$offset" -N 4 "$file" | tr -d ' \n')" == "$ENABLE_THP_HEX" ]]
      echo "restored goodix:default_thp raw-frame path at 0x12e08"
  }
  
@@ -1082,7 +1129,7 @@ index 2ee711a..f5f8b0b 100755
  [[ -f "$SCP" && -f "$GOODIX" && -f "$FOCALTECH" ]] || {
      echo "Android 16 SCP/Goodix/FocalTech modules are missing from $MODULE_DIR" >&2
      exit 1
-@@ -80,17 +103,18 @@ scp_sha="$(sha256sum "$SCP" | cut -d' ' -f1)"
+@@ -80,17 +123,18 @@ scp_sha="$(sha256sum "$SCP" | cut -d' ' -f1)"
  goodix_sha="$(sha256sum "$GOODIX" | cut -d' ' -f1)"
  focaltech_sha="$(sha256sum "$FOCALTECH" | cut -d' ' -f1)"
  
@@ -1104,7 +1151,7 @@ index 2ee711a..f5f8b0b 100755
        "$goodix_sha" != "$GOODIX_NO_THP_SHA256" ]]; then
      echo "refusing unrecognized goodix_core_rodin.ko: $goodix_sha" >&2
      exit 1
-@@ -100,7 +124,13 @@ fi
+@@ -100,7 +144,13 @@ fi
  # original module ABI and symbol CRCs, but do not register the SCP platform
  # driver. Goodix still probes its AP-side SPI path; its SCP offload helpers are
  # disabled because their backing memory and IPI endpoint do not exist here.
@@ -1233,7 +1280,7 @@ index 0000000..9228378
 +if __name__ == "__main__":
 +    raise SystemExit(main())
 diff --git a/tools/verify-build-inputs.sh b/tools/verify-build-inputs.sh
-index 1f960e1..28591ab 100755
+index 1f960e1..c3e5b18 100755
 --- a/tools/verify-build-inputs.sh
 +++ b/tools/verify-build-inputs.sh
 @@ -15,7 +15,7 @@ case "${RODIN_FIRMWARE_VARIANT:-cn}" in
@@ -1284,7 +1331,7 @@ index 1f960e1..28591ab 100755
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/scp.ko" ebae9554467e148256cfbab90f0b6d7943d2818ae0cf09bad8aec650bbd99310
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/goodix_core_rodin.ko" 3c2fe7db061743134b715e5a7c361690c3fa36cfacb9c15c1e0bb122e51ac966
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/focaltech_touch_rodin.ko" da967ce3f94ecc81153ee91f7e06a2b48eda0526b857688016ef660844bc70b2
-@@ -140,6 +158,21 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
+@@ -140,6 +158,28 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
  check_contains "${DEVICE_DIR}/fox_callback.sh" \
      'focaltech_touch_rodin.ko|goodix_core_rodin.ko' \
      "FocalTech module is not retained in the final ramdisk"
@@ -1303,10 +1350,17 @@ index 1f960e1..28591ab 100755
 +check_contains "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
 +    'GLOBAL_SCP_STOCK_SHA256' \
 +    "Global touch patch hashes are missing"
++check_contains "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
++    'python3 - "$file" "$offset" "$RETURN_ZERO_HEX"' \
++    "Recovery module patcher does not use the Android-compatible Python tool"
++if grep -qE '^[[:space:]]*perl[[:space:]]' \
++        "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh"; then
++    fail "Recovery module patcher uses perl, which Android PATH rejects during image assembly"
++fi
  check_contains "${DEVICE_DIR}/Android.bp" \
      'name: "rodin_android.hardware.secure_element-V1-ndk"' \
      "Recovery secure-element prebuilt module is missing"
-@@ -194,6 +227,24 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+@@ -194,6 +234,24 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
  check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
      'verify_image --image "$disable_avb_verify_image"' \
      "disable-avb vendor_boot AVB footer is not verified"
@@ -1331,7 +1385,7 @@ index 1f960e1..28591ab 100755
  check_contains "${DEVICE_DIR}/BoardConfig.mk" \
      'OF_USE_AIDL_BOOT_CONTROL := 1' \
      "OrangeFox is not configured to use AIDL BootControl"
-@@ -248,6 +299,12 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
+@@ -248,6 +306,12 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
          fail "Python syntax check failed: tools/verify-source-manifest.py"
  fi
  
@@ -1344,7 +1398,7 @@ index 1f960e1..28591ab 100755
  if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
      for marker in \
          OF_SKIP_POST_DECRYPT_THEME_RELOAD \
-@@ -255,6 +312,9 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
+@@ -255,6 +319,9 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
          fallback_face \
          processKeyChord \
          Resolve_UsbOtg_Block_Device \
