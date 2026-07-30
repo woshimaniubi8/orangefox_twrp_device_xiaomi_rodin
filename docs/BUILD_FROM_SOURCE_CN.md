@@ -156,7 +156,9 @@ recovery patch 包含：
   Android 构建环境允许的 `python3`，不依赖被 Soong PATH 限制的 `perl`。repacker 会验证其中的
   Type-C/OTG 模块及 `vbus_switch`，并将最终 Recovery 的 7 个模块逐字节比对为已修补的
   Global 输入，防止 CN recovery fragment 被误用；DTB 与 CN 基线完全相同，仍会移除 xHCI 的
-  `mediatek,usb-offload` 属性。
+  `mediatek,usb-offload` 属性。Global 的 6.6.89 MTK DRM 在 Recovery 中不能可靠地从
+  atomic CRTC blank 恢复，因此仅该 profile 定义 `TW_NO_SCREEN_BLANK`：锁屏、超时和亮度恢复
+  仍然可用，但以 `panel1-backlight/brightness=0` 代替关闭 CRTC。CN 不使用此 workaround。
 - stock DTB 的 xHCI 节点依赖 Android USB audio offload；Recovery 不加载其音频/基带依赖。
   repacker 会用 `fdtput` 在临时 DTB 删除唯一的 `mediatek,usb-offload` 属性，并保留、更新
   MTK wrapper 长度字段。构建主机必须提供 `device-tree-compiler`（`fdtget`、`fdtput`）。

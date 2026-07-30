@@ -55,7 +55,11 @@ Its stock DTB is byte-identical to the CN baseline, while its modules use the
 the build creates a patched seven-module Global source directory and directs
 `PRODUCT_COPY_FILES` to it. This makes the module set independent of callback
 ordering. The repacker also fails unless Global's Type-C/OTG stack exposes
-`vbus_switch`; do not flash the CN image on Global firmware.
+`vbus_switch`; do not flash the CN image on Global firmware. Global's DRM
+driver does not reliably restore an atomic CRTC after a Recovery screen blank,
+so that profile retains the lock and timeout UI but blanks by setting the
+working panel backlight to zero rather than disabling the CRTC. CN retains its
+normal DRM blank path.
 
 The stock DTB additionally makes the xHCI node depend on Android's USB audio
 offload service. Recovery deliberately does not load that audio/modem stack;

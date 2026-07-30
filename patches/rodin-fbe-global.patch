@@ -47,7 +47,7 @@ index 049c733..ee46231 100644
            kill "$heartbeat_pid" 2>/dev/null || true
            trap - EXIT
 diff --git a/BoardConfig.mk b/BoardConfig.mk
-index 65b4845..22ad69a 100644
+index 65b4845..55d6b41 100644
 --- a/BoardConfig.mk
 +++ b/BoardConfig.mk
 @@ -77,7 +77,7 @@ BOARD_USES_METADATA_PARTITION := true
@@ -59,11 +59,24 @@ index 65b4845..22ad69a 100644
  
  AB_OTA_UPDATER := true
  # The retained stock MediaTek service is AIDL. This also makes OrangeFox's
+@@ -130,6 +130,12 @@ TARGET_SCREEN_WIDTH := 1220
+ TARGET_SCREEN_HEIGHT := 2712
+ TW_MAX_BRIGHTNESS := 2047
+ TW_DEFAULT_BRIGHTNESS := 1000
++# Global's 6.6.89 MTK DRM accepts the atomic CRTC disable but can fail to
++# restore the panel on the matching enable commit. The working backlight node
++# still gives blanktimer a reversible screen-off path without touching DRM.
++ifeq ($(RODIN_FIRMWARE_VARIANT),global)
++TW_NO_SCREEN_BLANK := true
++endif
+ # Read capacity directly from the working kernel power-supply node.
+ TW_USE_LEGACY_BATTERY_SERVICES := true
+ TW_INCLUDE_FASTBOOTD := true
 diff --git a/README.md b/README.md
-index d7f130d..b2456b5 100644
+index d7f130d..4c2c7a1 100644
 --- a/README.md
 +++ b/README.md
-@@ -34,14 +34,54 @@ device's validated 60 MB combined-ramdisk limit. The Mount menu's "USB
+@@ -34,14 +34,58 @@ device's validated 60 MB combined-ramdisk limit. The Mount menu's "USB
  Storage" gadget action remains disabled because it is unrelated to host-mode
  OTG and would export phone storage to a computer.
  
@@ -90,7 +103,11 @@ index d7f130d..b2456b5 100644
 +the build creates a patched seven-module Global source directory and directs
 +`PRODUCT_COPY_FILES` to it. This makes the module set independent of callback
 +ordering. The repacker also fails unless Global's Type-C/OTG stack exposes
-+`vbus_switch`; do not flash the CN image on Global firmware.
++`vbus_switch`; do not flash the CN image on Global firmware. Global's DRM
++driver does not reliably restore an atomic CRTC after a Recovery screen blank,
++so that profile retains the lock and timeout UI but blanks by setting the
++working panel backlight to zero rather than disabling the CRTC. CN retains its
++normal DRM blank path.
 +
 +The stock DTB additionally makes the xHCI node depend on Android's USB audio
 +offload service. Recovery deliberately does not load that audio/modem stack;
@@ -259,7 +276,7 @@ index 2f227ef..4b54819 100644
  不能直接加载原始 `scp.ko`。实机 pstore 已确认它会在缺少 SCP reserved-memory 的 Recovery 环境中于 `scp_region_info_init()` 触发 kernel panic。
  
 diff --git a/docs/BUILD_FROM_SOURCE_CN.md b/docs/BUILD_FROM_SOURCE_CN.md
-index 9613a69..ca5d7fe 100644
+index 9613a69..690ed9e 100644
 --- a/docs/BUILD_FROM_SOURCE_CN.md
 +++ b/docs/BUILD_FROM_SOURCE_CN.md
 @@ -85,10 +85,9 @@ rodin 在删除 `.repo` 后，源码与完整 `out/` 的构建峰值仍约为 83
@@ -276,7 +293,7 @@ index 9613a69..ca5d7fe 100644
  
  只有 `main` 上成功的构建会创建 prerelease。其他 ref 的手动构建仍会上传
  artifact，但不会向仓库发布 release。
-@@ -145,6 +144,24 @@ recovery patch 包含：
+@@ -145,6 +144,26 @@ recovery patch 包含：
  - rodin 解密后禁止完整 GUI package 重建，避免 recovery `SIGSEGV`。
  - 解密页面显示前加载默认简体中文。
  - MiSans 主题选择项和 SIH6887 震动节点支持。
@@ -292,7 +309,9 @@ index 9613a69..ca5d7fe 100644
 +  Android 构建环境允许的 `python3`，不依赖被 Soong PATH 限制的 `perl`。repacker 会验证其中的
 +  Type-C/OTG 模块及 `vbus_switch`，并将最终 Recovery 的 7 个模块逐字节比对为已修补的
 +  Global 输入，防止 CN recovery fragment 被误用；DTB 与 CN 基线完全相同，仍会移除 xHCI 的
-+  `mediatek,usb-offload` 属性。
++  `mediatek,usb-offload` 属性。Global 的 6.6.89 MTK DRM 在 Recovery 中不能可靠地从
++  atomic CRTC blank 恢复，因此仅该 profile 定义 `TW_NO_SCREEN_BLANK`：锁屏、超时和亮度恢复
++  仍然可用，但以 `panel1-backlight/brightness=0` 代替关闭 CRTC。CN 不使用此 workaround。
 +- stock DTB 的 xHCI 节点依赖 Android USB audio offload；Recovery 不加载其音频/基带依赖。
 +  repacker 会用 `fdtput` 在临时 DTB 删除唯一的 `mediatek,usb-offload` 属性，并保留、更新
 +  MTK wrapper 长度字段。构建主机必须提供 `device-tree-compiler`（`fdtget`、`fdtput`）。
@@ -302,18 +321,21 @@ index 9613a69..ca5d7fe 100644
  - Android 16 FBE 已解密后，先用 Recovery 内置 `dmctl` 释放 `/dev/block/mapper/userdata`，确认映射消失后才格式化物理 userdata 分区；删除失败会中止操作。
  
 diff --git a/docs/DEVICE_TREE_PATCHES_CN.md b/docs/DEVICE_TREE_PATCHES_CN.md
-index d1a855d..d56fb9f 100644
+index d1a855d..d634f27 100644
 --- a/docs/DEVICE_TREE_PATCHES_CN.md
 +++ b/docs/DEVICE_TREE_PATCHES_CN.md
-@@ -10,6 +10,7 @@
+@@ -10,6 +10,10 @@
  - `recovery/root/init.recovery.keymint.rc`：为 OMAPI bridge 设置 vendor/system 运行时库搜索路径和 libc++ compatibility preload；在 `tee-supplicant` 就绪后并行启动 KeyMint、secure-element 与 NXP Weaver，不再以 bridge ready 属性阻塞 Weaver。
  - `BoardConfig.mk`、`recovery/root/init.recovery.bootctl.rc` 与 post-build repacker：OrangeFox 和 ROM updater 均使用 stock MediaTek AIDL BootControl；重打包器保留 binary，并将其 device VINTF fragment 放到 `/vendor/etc/vintf/manifest`，避免 `/system` framework VINTF 解析失败而使 Keystore2 崩溃。recovery rc 通过 compatibility shim 启动该服务，避免旧 HIDL fallback 的 UFS boot-region ioctl 使 slot 切换失败。
  - `tools/build-system-compatible-vendor-boot.sh`：增加 `RODIN_FIRMWARE_VARIANT=cn|global`，使最终镜像保留与目标系统相匹配的 type-1 platform ramdisk。
++- `BoardConfig.mk`：Global profile 启用 `TW_NO_SCREEN_BLANK`。其 6.6.89 MTK DRM 在
++  Recovery 的 atomic CRTC disable/enable 后可能保持黑屏，而 `panel1-backlight/brightness`
++  已实测可读写；该开关保留锁屏与超时，仅以亮度归零和恢复代替 DRM CRTC blank。CN 保持原行为。
 +- `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，先拉取 Git LFS blob，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。
  - 构建前检查、文件哈希清单和构建文档。
  
  这份补丁解决三个已定位的问题：原先 Soong 会把设备树中 Android 15 预编译 NDK 库与 Android 16 AIDL 生成模块混淆，导致 recovery 依赖解析失败；运行时的 bridge 则因找不到 `/vendor/lib64` 内的 NDK 库而无法启动，使 Weaver 被错误的 ready gate 无限阻塞；旧 HIDL BootControl fallback 在 rodin 上会使 UFS boot-region 设置失败并导致 slot 切换失败。它们分别影响可编译性、FBE synthetic-password 流程和 Virtual A/B ROM 更新后的 slot 处理。
-@@ -34,6 +35,35 @@ FBE 已解密后的 `userdata` mapper 与动态分区不是同一类对象，不
+@@ -34,6 +38,35 @@ FBE 已解密后的 `userdata` mapper 与动态分区不是同一类对象，不
  删除 `/dev/block/mapper/userdata`。命令失败或节点在最多一秒后仍存在时会终止格式化，
  不会继续向仍被映射占用的物理 userdata 块设备执行 `make_f2fs`。
  
@@ -349,7 +371,7 @@ index d1a855d..d56fb9f 100644
  ## 应用
  
  先保存完整设备树和现有工作，再在 OrangeFox 源码根目录执行。补丁文件必须在目标设备树外部，因为应用前目标树中尚不存在该文件。
-@@ -75,6 +105,15 @@ device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
+@@ -75,6 +108,15 @@ device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
  | type-1 fragment SHA-256 | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
  | DTB SHA-256 | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
  
@@ -365,12 +387,66 @@ index d1a855d..d56fb9f 100644
  然后使用：
  
  ```bash
-@@ -89,4 +128,4 @@ RODIN_FIRMWARE_VARIANT=global \
+@@ -89,4 +131,4 @@ RODIN_FIRMWARE_VARIANT=global \
    device/xiaomi/rodin/tools/verify-build-inputs.sh "$PWD"
  ```
  
 -Global 输出为 `OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img`，不能用于 CN；默认 CN 输出也不能用于 Global。
 +Global 输出为 `OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img`，不能用于 CN；默认 CN 输出也不能用于 Global。repacker 会将最终 Recovery fragment 中的 7 个 ABI 相关模块与由 Global 输入和固定偏移 patch 生成的预期内容逐字节比较；若复用了 CN 的 recovery fragment，构建会停止而不会输出 Global 成品。
+diff --git a/docs/TROUBLESHOOTING_CN.md b/docs/TROUBLESHOOTING_CN.md
+index 1181488..a3f17d1 100644
+--- a/docs/TROUBLESHOOTING_CN.md
++++ b/docs/TROUBLESHOOTING_CN.md
+@@ -135,7 +135,30 @@ adb shell 'file /twres/fonts/MiSans.ttf'
+ -DOF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT=1
+ ```
+ 
+-## 10. Recovery 正常但系统无法启动
++## 10. Global 按电源后无法亮屏
++
++若短按电源后屏幕熄灭、再次短按仍黑屏，但 `init.svc.recovery=running`，则不是
++OrangeFox 进程崩溃。Global 6.6.89 的 MTK DRM 可接受 atomic CRTC blank，却可能无法在
++对应 enable commit 后恢复面板。
++
++当前 Global profile 通过 `TW_NO_SCREEN_BLANK` 避开该路径：锁屏 overlay、屏幕超时和
++用户保存的亮度设置都保留；Recovery 仅向已验证的
++`/sys/devices/virtual/backlight/panel1-backlight/brightness` 写入 `0`，唤醒时恢复先前亮度。
++CN 不应用这个 workaround。刷入新 Global 镜像后，应连续短按电源两次验证黑屏和亮屏均正常。
++
++本问题的日志运行在 `6.6.139-EVONIX`，而 Global 构建输入固定为 stock
++`6.6.89`。此 workaround 不替换内核或模块，只避免 DRM CRTC 状态转换；其他异常不能据此
++视为已适配第三方内核，仍应在匹配的 stock Global 固件上回归触摸、FBE、OTG 和正常系统启动。
++
++若新镜像仍复现，先在黑屏且 ADB 仍在线时保存以下只读证据，不要强制重启后覆盖日志：
++
++```bash
++adb shell 'getprop init.svc.recovery; cat /sys/devices/virtual/backlight/panel1-backlight/brightness'
++adb pull /tmp/recovery.log logs/global-screen-wake-recovery.log
++adb shell dmesg > logs/global-screen-wake-dmesg.txt
++```
++
++## 11. Recovery 正常但系统无法启动
+ 
+ 必须确认最终刷入的是 `OrangeFox-...-system-compatible.img`。正常 Android boot 只选择 type-1 platform fragment；它必须保留 stock first-stage init、linker、libc、fstab、SELinux、firmware 和全部 244 个模块。
+ 
+@@ -160,7 +183,7 @@ fastboot reboot
+ 
+ 不要在未确认原因前刷另一槽位。
+ 
+-## 11. 刷 ROM 后无法 Format Data / `Unable to unmap dynamic partitions`
++## 12. 刷 ROM 后无法 Format Data / `Unable to unmap dynamic partitions`
+ 
+ 先区分是否在同一 Recovery 会话内操作。Virtual A/B ROM 更新完后，OrangeFox 会提示：
+ 
+@@ -213,7 +236,7 @@ stock AIDL BootControl 的新构建；旧 HIDL fallback 会在 rodin 上把 UFS
+ ioctl 失败报告为 slot 切换失败。不要通过手工删除 mapper 节点或强制擦写 `super` 来
+ 绕过该错误。
+ 
+-## 12. 最小日志包
++## 13. 最小日志包
+ 
+ ```bash
+ LOGDIR="logs/$(date +%F-%H%M%S)"
 diff --git a/fox_callback.sh b/fox_callback.sh
 index e13a0b2..8e7fa3b 100644
 --- a/fox_callback.sh
@@ -1280,7 +1356,7 @@ index 0000000..9228378
 +if __name__ == "__main__":
 +    raise SystemExit(main())
 diff --git a/tools/verify-build-inputs.sh b/tools/verify-build-inputs.sh
-index 1f960e1..c3e5b18 100755
+index 1f960e1..752930a 100755
 --- a/tools/verify-build-inputs.sh
 +++ b/tools/verify-build-inputs.sh
 @@ -15,7 +15,7 @@ case "${RODIN_FIRMWARE_VARIANT:-cn}" in
@@ -1331,7 +1407,7 @@ index 1f960e1..c3e5b18 100755
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/scp.ko" ebae9554467e148256cfbab90f0b6d7943d2818ae0cf09bad8aec650bbd99310
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/goodix_core_rodin.ko" 3c2fe7db061743134b715e5a7c361690c3fa36cfacb9c15c1e0bb122e51ac966
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/focaltech_touch_rodin.ko" da967ce3f94ecc81153ee91f7e06a2b48eda0526b857688016ef660844bc70b2
-@@ -140,6 +158,28 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
+@@ -140,6 +158,34 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
  check_contains "${DEVICE_DIR}/fox_callback.sh" \
      'focaltech_touch_rodin.ko|goodix_core_rodin.ko' \
      "FocalTech module is not retained in the final ramdisk"
@@ -1347,6 +1423,12 @@ index 1f960e1..c3e5b18 100755
 +check_contains "${DEVICE_DIR}/BoardConfig.mk" \
 +    'RODIN_FIRMWARE_VARIANT=$(RODIN_FIRMWARE_VARIANT)' \
 +    "Recovery callback does not receive the selected firmware profile"
++check_contains "${DEVICE_DIR}/BoardConfig.mk" \
++    'ifeq ($(RODIN_FIRMWARE_VARIANT),global)' \
++    "Global DRM screen-blank workaround profile is missing"
++check_contains "${DEVICE_DIR}/BoardConfig.mk" \
++    'TW_NO_SCREEN_BLANK := true' \
++    "Global DRM screen-blank workaround is missing"
 +check_contains "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
 +    'GLOBAL_SCP_STOCK_SHA256' \
 +    "Global touch patch hashes are missing"
@@ -1360,7 +1442,7 @@ index 1f960e1..c3e5b18 100755
  check_contains "${DEVICE_DIR}/Android.bp" \
      'name: "rodin_android.hardware.secure_element-V1-ndk"' \
      "Recovery secure-element prebuilt module is missing"
-@@ -194,6 +234,24 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+@@ -194,6 +240,24 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
  check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
      'verify_image --image "$disable_avb_verify_image"' \
      "disable-avb vendor_boot AVB footer is not verified"
@@ -1385,7 +1467,7 @@ index 1f960e1..c3e5b18 100755
  check_contains "${DEVICE_DIR}/BoardConfig.mk" \
      'OF_USE_AIDL_BOOT_CONTROL := 1' \
      "OrangeFox is not configured to use AIDL BootControl"
-@@ -248,6 +306,12 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
+@@ -248,6 +312,12 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
          fail "Python syntax check failed: tools/verify-source-manifest.py"
  fi
  
@@ -1398,7 +1480,7 @@ index 1f960e1..c3e5b18 100755
  if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
      for marker in \
          OF_SKIP_POST_DECRYPT_THEME_RELOAD \
-@@ -255,6 +319,9 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
+@@ -255,6 +325,9 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
          fallback_face \
          processKeyChord \
          Resolve_UsbOtg_Block_Device \
@@ -1408,7 +1490,16 @@ index 1f960e1..c3e5b18 100755
          "skipping logical partition alias" \
          "Decrypted userdata mapper is still present"; do
          search_tree "$marker" "${TOP_DIR}/bootable/recovery" || \
-diff --git a/prebuilt/README.md b/prebuilt/README.md
+@@ -310,6 +383,9 @@ check_contains "${TOP_DIR}/system/vold/Weaver1.cpp" \
+ check_contains "${TOP_DIR}/vendor/twrp/config/BoardConfigSoong.mk" \
+     'include bootable/recovery/orangefox_soong.mk' \
+     "OrangeFox vendor/twrp Soong include is missing"
++check_contains "${TOP_DIR}/vendor/twrp/build/soong/Android.bp" \
++    'tw_no_screen_blank' \
++    "OrangeFox Soong does not export TW_NO_SCREEN_BLANK"
+ 
+ if command -v file >/dev/null 2>&1 && [[ -f "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" ]]; then
+     file "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" | grep -q 'TrueType Font data' || \
 --- a/prebuilt/README.md
 +++ b/prebuilt/README.md
 @@ -9,6 +9,7 @@

@@ -170,6 +170,12 @@ check_contains "${DEVICE_DIR}/device.mk" \
 check_contains "${DEVICE_DIR}/BoardConfig.mk" \
     'RODIN_FIRMWARE_VARIANT=$(RODIN_FIRMWARE_VARIANT)' \
     "Recovery callback does not receive the selected firmware profile"
+check_contains "${DEVICE_DIR}/BoardConfig.mk" \
+    'ifeq ($(RODIN_FIRMWARE_VARIANT),global)' \
+    "Global DRM screen-blank workaround profile is missing"
+check_contains "${DEVICE_DIR}/BoardConfig.mk" \
+    'TW_NO_SCREEN_BLANK := true' \
+    "Global DRM screen-blank workaround is missing"
 check_contains "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
     'GLOBAL_SCP_STOCK_SHA256' \
     "Global touch patch hashes are missing"
@@ -377,6 +383,9 @@ check_contains "${TOP_DIR}/system/vold/Weaver1.cpp" \
 check_contains "${TOP_DIR}/vendor/twrp/config/BoardConfigSoong.mk" \
     'include bootable/recovery/orangefox_soong.mk' \
     "OrangeFox vendor/twrp Soong include is missing"
+check_contains "${TOP_DIR}/vendor/twrp/build/soong/Android.bp" \
+    'tw_no_screen_blank' \
+    "OrangeFox Soong does not export TW_NO_SCREEN_BLANK"
 
 if command -v file >/dev/null 2>&1 && [[ -f "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" ]]; then
     file "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" | grep -q 'TrueType Font data' || \

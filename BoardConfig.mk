@@ -130,6 +130,12 @@ TARGET_SCREEN_WIDTH := 1220
 TARGET_SCREEN_HEIGHT := 2712
 TW_MAX_BRIGHTNESS := 2047
 TW_DEFAULT_BRIGHTNESS := 1000
+# Global's 6.6.89 MTK DRM accepts the atomic CRTC disable but can fail to
+# restore the panel on the matching enable commit. The working backlight node
+# still gives blanktimer a reversible screen-off path without touching DRM.
+ifeq ($(RODIN_FIRMWARE_VARIANT),global)
+TW_NO_SCREEN_BLANK := true
+endif
 # Read capacity directly from the working kernel power-supply node.
 TW_USE_LEGACY_BATTERY_SERVICES := true
 TW_INCLUDE_FASTBOOTD := true

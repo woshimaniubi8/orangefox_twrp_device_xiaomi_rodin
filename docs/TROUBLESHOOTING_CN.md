@@ -135,7 +135,30 @@ adb shell 'file /twres/fonts/MiSans.ttf'
 -DOF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT=1
 ```
 
-## 10. Recovery 正常但系统无法启动
+## 10. Global 按电源后无法亮屏
+
+若短按电源后屏幕熄灭、再次短按仍黑屏，但 `init.svc.recovery=running`，则不是
+OrangeFox 进程崩溃。Global 6.6.89 的 MTK DRM 可接受 atomic CRTC blank，却可能无法在
+对应 enable commit 后恢复面板。
+
+当前 Global profile 通过 `TW_NO_SCREEN_BLANK` 避开该路径：锁屏 overlay、屏幕超时和
+用户保存的亮度设置都保留；Recovery 仅向已验证的
+`/sys/devices/virtual/backlight/panel1-backlight/brightness` 写入 `0`，唤醒时恢复先前亮度。
+CN 不应用这个 workaround。刷入新 Global 镜像后，应连续短按电源两次验证黑屏和亮屏均正常。
+
+本问题的日志运行在 `6.6.139-EVONIX`，而 Global 构建输入固定为 stock
+`6.6.89`。此 workaround 不替换内核或模块，只避免 DRM CRTC 状态转换；其他异常不能据此
+视为已适配第三方内核，仍应在匹配的 stock Global 固件上回归触摸、FBE、OTG 和正常系统启动。
+
+若新镜像仍复现，先在黑屏且 ADB 仍在线时保存以下只读证据，不要强制重启后覆盖日志：
+
+```bash
+adb shell 'getprop init.svc.recovery; cat /sys/devices/virtual/backlight/panel1-backlight/brightness'
+adb pull /tmp/recovery.log logs/global-screen-wake-recovery.log
+adb shell dmesg > logs/global-screen-wake-dmesg.txt
+```
+
+## 11. Recovery 正常但系统无法启动
 
 必须确认最终刷入的是 `OrangeFox-...-system-compatible.img`。正常 Android boot 只选择 type-1 platform fragment；它必须保留 stock first-stage init、linker、libc、fstab、SELinux、firmware 和全部 244 个模块。
 
@@ -160,7 +183,7 @@ fastboot reboot
 
 不要在未确认原因前刷另一槽位。
 
-## 11. 刷 ROM 后无法 Format Data / `Unable to unmap dynamic partitions`
+## 12. 刷 ROM 后无法 Format Data / `Unable to unmap dynamic partitions`
 
 先区分是否在同一 Recovery 会话内操作。Virtual A/B ROM 更新完后，OrangeFox 会提示：
 
@@ -213,7 +236,7 @@ stock AIDL BootControl 的新构建；旧 HIDL fallback 会在 rodin 上把 UFS 
 ioctl 失败报告为 slot 切换失败。不要通过手工删除 mapper 节点或强制擦写 `super` 来
 绕过该错误。
 
-## 12. 最小日志包
+## 13. 最小日志包
 
 ```bash
 LOGDIR="logs/$(date +%F-%H%M%S)"
