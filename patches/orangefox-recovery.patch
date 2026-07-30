@@ -1,3 +1,46 @@
+diff --git a/gui/action.cpp b/gui/action.cpp
+index 42e30797..aa568b97 100755
+--- a/gui/action.cpp
++++ b/gui/action.cpp
+@@ -967,6 +967,19 @@ int GUIAction::mount(std::string arg)
+       else
+ 	gui_msg("simulating=Simulating actions...");
+     }
++  else if (arg == "otg")
++    {
++      if (!simulate)
++	{
++	  // The rodin Type-C controller only powers VBUS after host mode is
++	  // requested. Keep this explicit so a recovery boot never steals the
++	  // computer/ADB connection merely because a cable is attached.
++	  DataManager::SetValue("tw_usb_otg_host_stop", 0);
++	  DataManager::SetValue("tw_usb_otg_host_request", 1);
++	}
++      else
++	gui_msg("simulating=Simulating actions...");
++    }
+   else if (!simulate)
+     {
+       PartitionManager.Mount_By_Path(arg, true);
+@@ -987,6 +1000,18 @@ int GUIAction::unmount(std::string arg)
+ 	gui_msg("simulating=Simulating actions...");
+       DataManager::SetValue(TW_ACTION_BUSY, 0);
+     }
++  else if (arg == "otg")
++    {
++      if (!simulate)
++	{
++	  // The one-second OTG monitor owns the role switch. Asking it to stop
++	  // avoids racing a mounted filesystem or a pending enumeration.
++	  DataManager::SetValue("tw_usb_otg_host_request", 0);
++	  DataManager::SetValue("tw_usb_otg_host_stop", 1);
++	}
++      else
++	gui_msg("simulating=Simulating actions...");
++    }
+   else if (!simulate)
+     {
+       PartitionManager.UnMount_By_Path(arg, true);
 diff --git a/gui/gui.cpp b/gui/gui.cpp
 index 71bbc967..4291f2aa 100644
 --- a/gui/gui.cpp
@@ -293,6 +336,61 @@ index 3d5cc9b3..fed8df35 100644
  						[ -d "%fox_theme_path%" ] &amp;&amp; rm -rf %fox_theme_path%;
  						[[ '%update_navbar%' = '1' ]] || exit;
  					else
+diff --git a/gui/theme/portrait_hdpi/pages/mount.xml b/gui/theme/portrait_hdpi/pages/mount.xml
+index 2c15dc91..8feeee53 100644
+--- a/gui/theme/portrait_hdpi/pages/mount.xml
++++ b/gui/theme/portrait_hdpi/pages/mount.xml
+@@ -105,6 +105,50 @@
+ 				<image resource="fab_usb"/>
+ 			</image>
+ 
++			<!-- USB OTG host mode is separate from the legacy USB-storage gadget.
++			     On rodin, touch this after connecting an OTG drive to supply VBUS. -->
++			<image>
++				<condition var1="tw_has_usb_otg" var2="1"/>
++				<condition var1="tw_usb_otg_host_active" op="!=" var2="1"/>
++				<placement x="%btn_float_x%" y="%btn_float_y%" placement="4"/>
++				<image resource="fab_shadow"/>
++			</image>
++
++			<button style="floating_btn">
++				<condition var1="tw_has_usb_otg" var2="1"/>
++				<condition var1="tw_usb_otg_host_active" op="!=" var2="1"/>
++				<placement x="%btn_float_x%" y="%btn_float_y%" placement="4"/>
++				<action function="mount">otg</action>
++			</button>
++
++			<image>
++				<condition var1="tw_has_usb_otg" var2="1"/>
++				<condition var1="tw_usb_otg_host_active" op="!=" var2="1"/>
++				<placement x="%btn_float_x%" y="%btn_float_y%" placement="4"/>
++				<image resource="fab_usb"/>
++			</image>
++
++			<image>
++				<condition var1="tw_has_usb_otg" var2="1"/>
++				<condition var1="tw_usb_otg_host_active" var2="1"/>
++				<placement x="%btn_float_x%" y="%btn_float_y%" placement="4"/>
++				<image resource="fab_shadow"/>
++			</image>
++
++			<button style="floating_btn">
++				<condition var1="tw_has_usb_otg" var2="1"/>
++				<condition var1="tw_usb_otg_host_active" var2="1"/>
++				<placement x="%btn_float_x%" y="%btn_float_y%" placement="4"/>
++				<action function="unmount">otg</action>
++			</button>
++
++			<image>
++				<condition var1="tw_has_usb_otg" var2="1"/>
++				<condition var1="tw_usb_otg_host_active" var2="1"/>
++				<placement x="%btn_float_x%" y="%btn_float_y%" placement="4"/>
++				<image resource="fab_close"/>
++			</image>
++
+ 			<template name="gestures"/>
+ 
+ 			<action>
 diff --git a/gui/theme/portrait_hdpi/resources/images.xml b/gui/theme/portrait_hdpi/resources/images.xml
 index 1d8dec09..cf763f95 100644
 --- a/gui/theme/portrait_hdpi/resources/images.xml
@@ -639,7 +737,7 @@ index c437cc77..57b121af 100644
  	#elif defined(FOX_USE_DMSETUP)
  	if (TWFunc::Path_Exists("/dev/block/mapper/userdata")) {
 diff --git a/partitionmanager.cpp b/partitionmanager.cpp
-index 0ea3a125..e640d27b 100755
+index 0ea3a125..e347aa7b 100755
 --- a/partitionmanager.cpp
 +++ b/partitionmanager.cpp
 @@ -25,7 +25,9 @@
@@ -685,7 +783,7 @@ index 0ea3a125..e640d27b 100755
  				}
  			}
  		}
-@@ -4916,45 +4930,134 @@ bool TWPartitionManager::Check_Pending_Merges() {
+@@ -4916,45 +4930,272 @@ bool TWPartitionManager::Check_Pending_Merges() {
  	return true;
  }
  
@@ -764,34 +862,141 @@ index 0ea3a125..e640d27b 100755
 +	return false;
 +}
 +
++static constexpr char kUsbOtgRoleSwitch[] = "/sys/class/usb_role/11201000.usb0-role-switch/role";
++static constexpr char kUsbOtgEnable[] = "/sys/devices/platform/charger/power_supply/usb/otg_enable";
++static constexpr char kUsbOtgVbusSwitch[] = "/sys/devices/platform/extcon-usb/vbus_switch";
++static constexpr char kUsbOtgPreferredRole[] = "/sys/class/typec/port0/preferred_role";
++static constexpr time_t kUsbOtgHostTimeoutSeconds = 20;
++
++static bool UsbOtg_Host_Supported() {
++	return TWFunc::Path_Exists(kUsbOtgRoleSwitch) &&
++		TWFunc::Path_Exists(kUsbOtgEnable) &&
++		TWFunc::Path_Exists(kUsbOtgVbusSwitch) &&
++		TWFunc::Path_Exists(kUsbOtgPreferredRole);
++}
++
++static bool Enable_UsbOtg_Host_Mode() {
++	if (!UsbOtg_Host_Supported()) {
++		LOGERR("USB OTG host control nodes are unavailable\n");
++		return false;
++	}
++
++	// The stock policy prefers sink. With a passive Type-C OTG adapter this
++	// would make the controller accept external VBUS as a sink before the host
++	// controller has a chance to enumerate the drive. Set the preference before
++	// the user inserts the drive so the ensuing CC attach selects source/host.
++	if (!TWFunc::write_to_file(kUsbOtgPreferredRole, "source")) {
++		LOGERR("Unable to prefer Type-C source role for USB OTG\n");
++		return false;
++	}
++
++	// otg_enable only asks the charger driver to enter OTG policy. The
++	// extcon vbus switch owns the usb-otg-vbus regulator in the stock DTB and
++	// must be enabled as well, otherwise xHCI starts without powering a drive.
++	bool vbus_enabled = TWFunc::write_to_file(kUsbOtgVbusSwitch, "1");
++	bool otg_enabled = TWFunc::write_to_file(kUsbOtgEnable, "1");
++	bool host_selected = TWFunc::write_to_file(kUsbOtgRoleSwitch, "host");
++	if (!vbus_enabled || !otg_enabled || !host_selected) {
++		LOGERR("Unable to enable USB OTG host mode (vbus=%d, otg=%d, role=%d)\n",
++			   vbus_enabled, otg_enabled, host_selected);
++		TWFunc::write_to_file(kUsbOtgRoleSwitch, "device");
++		TWFunc::write_to_file(kUsbOtgEnable, "0");
++		TWFunc::write_to_file(kUsbOtgVbusSwitch, "0");
++		TWFunc::write_to_file(kUsbOtgPreferredRole, "sink");
++		return false;
++	}
++
++	LOGINFO("USB OTG host mode enabled\n");
++	return true;
++}
++
++static void Restore_UsbOtg_Device_Mode(bool* mtp_suspended, bool mtp_was_enabled) {
++	TWFunc::write_to_file(kUsbOtgVbusSwitch, "0");
++	TWFunc::write_to_file(kUsbOtgEnable, "0");
++	TWFunc::write_to_file(kUsbOtgRoleSwitch, "device");
++	TWFunc::write_to_file(kUsbOtgPreferredRole, "sink");
++	DataManager::SetValue("tw_usb_otg_host_active", 0);
++	// Let the USB role switch release the host controller before init binds
++	// the recovery gadget again.
++	usleep(500000);
++	if (*mtp_suspended) {
++		TWFunc::Toggle_MTP(mtp_was_enabled);
++		*mtp_suspended = false;
++	}
++}
++
  void TWPartitionManager::Check_UsbOtg_Status() {
  	static bool mtp_was_enabled;
 +	static bool mtp_suspended = false;
  	static bool usbotg_mounted = false;
 -	static string usbotg_prim = "";
 -	static string usbotg_alt = "";
++	static bool host_switch_pending = false;
++	static bool host_disabled_by_user = false;
++	static time_t host_switch_started = 0;
 +	static std::string mounted_device = "";
  	static TWPartition* usbotg = Find_Partition_By_Path("usb_otg");
 +	std::string resolved_device;
++	time_t now = time(NULL);
  
 -	if (usbotg && !usbotg->Primary_Block_Device.empty()) {
 -		usbotg_prim = usbotg->Primary_Block_Device;
 -		usbotg_alt = usbotg->Alternate_Block_Device;
 -	} else return;
-+	if (usbotg == NULL)
-+		return;
- 
+-
 -	if (TWFunc::Path_Exists(usbotg_prim) || (!usbotg_alt.empty() && TWFunc::Path_Exists(usbotg_alt))) {
 -		// Auto-mount only once when usb_otg was connected
 -		if (!usbotg_mounted) goto mount;
 -	} else if (usbotg_mounted) {
 -		// Is seems usb_otg was disconnected, so unmount it
 -		goto unmount;
--	}
++	if (usbotg == NULL || !UsbOtg_Host_Supported()) {
++		DataManager::SetValue("tw_has_usb_otg", 0);
++		return;
++	}
++	DataManager::SetValue("tw_has_usb_otg", 1);
++
++	if (DataManager::GetIntValue("tw_usb_otg_host_stop")) {
++		DataManager::SetValue("tw_usb_otg_host_stop", 0);
++		DataManager::SetValue("tw_usb_otg_host_request", 0);
++		host_switch_pending = false;
++		host_disabled_by_user = true;
++		host_switch_started = 0;
++		if (usbotg_mounted)
++			usbotg->UnMount(false);
++		usbotg_mounted = false;
++		mounted_device.clear();
++		usbotg->Primary_Block_Device.clear();
++		usbotg->Alternate_Block_Device.clear();
++		usbotg->Actual_Block_Device.clear();
++		usbotg->Is_Present = false;
++		usbotg->Size = 0;
++		usbotg->Used = 0;
++		usbotg->Free = 0;
++		Restore_UsbOtg_Device_Mode(&mtp_suspended, mtp_was_enabled);
++		LOGINFO("USB OTG host mode stopped by user\n");
++		return;
++	}
++	if (DataManager::GetIntValue("tw_usb_otg_host_request"))
++		host_disabled_by_user = false;
++	if (host_disabled_by_user)
++		return;
++	if (DataManager::GetIntValue("tw_usb_otg_host_request")) {
++		// Disable the recovery gadget before requesting host mode. Disable_MTP()
++		// normally leaves ADB active, so explicitly unbind it for this explicit
++		// transition. Do not infer host mode from Type-C role: rodin only starts
++		// sourcing VBUS after this request.
++		DataManager::SetValue("tw_usb_otg_host_request", 0);
++		mtp_was_enabled = TWFunc::Toggle_MTP(false);
++		mtp_suspended = true;
++		property_set("sys.usb.config", "none");
++		host_switch_pending = true;
++		host_switch_started = 0;
++		DataManager::SetValue("tw_usb_otg_host_active", 1);
++		LOGINFO("USB OTG host mode requested by user; preparing host controller\n");
++		return;
+ 	}
 -	return;
-+	if (Resolve_UsbOtg_Block_Device(&resolved_device)) {
-+		if (usbotg_mounted && mounted_device == resolved_device)
-+			return;
  
 -mount:
 -	mtp_was_enabled = TWFunc::Toggle_MTP(false);
@@ -800,6 +1005,14 @@ index 0ea3a125..e640d27b 100755
 -	if (PageManager::GetCurrentPage() == "filemanagerlist" && DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
 -		gui_changePage("filemanagerlist");
 -	return;
++	if (Resolve_UsbOtg_Block_Device(&resolved_device)) {
++		host_switch_pending = false;
++		host_switch_started = 0;
++		if (usbotg_mounted && mounted_device == resolved_device)
++			return;
+ 
+-unmount:
+-	usbotg->UnMount(false);
 +		if (usbotg_mounted)
 +			usbotg->UnMount(false);
 +
@@ -812,6 +1025,7 @@ index 0ea3a125..e640d27b 100755
 +			mtp_was_enabled = TWFunc::Toggle_MTP(false);
 +			mtp_suspended = true;
 +		}
++		DataManager::SetValue("tw_usb_otg_host_active", 1);
 +		usbotg_mounted = usbotg->Mount(true);
 +		mounted_device = resolved_device;
 +		if (PageManager::GetCurrentPage() == "filemanagerlist" &&
@@ -819,11 +1033,13 @@ index 0ea3a125..e640d27b 100755
 +			gui_changePage("filemanagerlist");
 +		return;
 +	}
- 
--unmount:
--	usbotg->UnMount(false);
-+	if (usbotg_mounted)
++
++	if (usbotg_mounted) {
 +		usbotg->UnMount(false);
++		usbotg_mounted = false;
++		mounted_device.clear();
++		Restore_UsbOtg_Device_Mode(&mtp_suspended, mtp_was_enabled);
++	}
 +	usbotg->Primary_Block_Device.clear();
 +	usbotg->Alternate_Block_Device.clear();
 +	usbotg->Actual_Block_Device.clear();
@@ -831,13 +1047,34 @@ index 0ea3a125..e640d27b 100755
  	usbotg->Size = 0;
  	usbotg->Used = 0;
  	usbotg->Free = 0;
- 	usbotg_mounted = false;
+-	usbotg_mounted = false;
 -	if (PageManager::GetCurrentPage() == "filemanagerlist" && DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
-+	mounted_device.clear();
-+	if (mtp_suspended) {
-+		TWFunc::Toggle_MTP(mtp_was_enabled);
-+		mtp_suspended = false;
++
++	if (host_switch_pending) {
++		if (host_switch_started == 0) {
++			if (Enable_UsbOtg_Host_Mode()) {
++				host_switch_started = now;
++			} else {
++				host_switch_pending = false;
++				Restore_UsbOtg_Device_Mode(&mtp_suspended, mtp_was_enabled);
++			}
++			return;
++		}
++
++		if (now - host_switch_started < kUsbOtgHostTimeoutSeconds)
++			return;
++
++		LOGINFO("USB OTG device did not enumerate; restoring device mode\n");
++		host_switch_pending = false;
++		host_switch_started = 0;
++		Restore_UsbOtg_Device_Mode(&mtp_suspended, mtp_was_enabled);
++		return;
 +	}
++
++	if (mtp_suspended) {
++		Restore_UsbOtg_Device_Mode(&mtp_suspended, mtp_was_enabled);
++	}
++
 +	if (PageManager::GetCurrentPage() == "filemanagerlist" &&
 +		DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
  		gui_changePage("filemanagerlist");
@@ -845,6 +1082,27 @@ index 0ea3a125..e640d27b 100755
  }
  
  std::pair<string, string> TWPartitionManager::Get_Partition_Checksums(TWPartition* twrpPart) {
+diff --git a/prebuilt/Android.mk b/prebuilt/Android.mk
+index a0240333..6961575c 100755
+--- a/prebuilt/Android.mk
++++ b/prebuilt/Android.mk
+@@ -62,7 +62,10 @@ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_RECOVERY_ROOT_OUT)/system/lib64/libkey
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_RECOVERY_ROOT_OUT)/system/lib64/liblogwrap.so
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_RECOVERY_ROOT_OUT)/system/lib64/liblp.so
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_RECOVERY_ROOT_OUT)/system/lib64/libprocessgroup.so
+-RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_RECOVERY_ROOT_OUT)/system/lib64/libprocessgroup_setup.so
++# Do not use TARGET_RECOVERY_ROOT_OUT as the source here. relink_libraries
++# installs into that exact path, so an incremental recovery build can copy a
++# placeholder over itself and leave init with an all-zero ELF-sized file.
++RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libprocessgroup_setup.so
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_RECOVERY_ROOT_OUT)/system/lib64/libcap.so
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_RECOVERY_ROOT_OUT)/system/lib64/libminijail.so
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_RECOVERY_ROOT_OUT)/system/lib64/libunwindstack.so
+@@ -593,4 +596,3 @@ ifeq ($(FOX_BUILD_BASH),1)
+         ln -sf /system/bin/bash $(TARGET_RECOVERY_ROOT_OUT)/sbin/bash;
+ 	include $(BUILD_PHONY_PACKAGE)
+ endif
+-
 diff --git a/twrp.cpp b/twrp.cpp
 index c9fdc572..f74435d2 100644
 --- a/twrp.cpp

@@ -1,2 +1,4 @@
 *.img filter=lfs diff=lfs merge=lfs -text
 prebuilt/* filter=lfs diff=lfs merge=lfs -text
+prebuilt/global/modules/*.ko filter=lfs diff=lfs merge=lfs -text
+*.ko filter=lfs diff=lfs merge=lfs -text

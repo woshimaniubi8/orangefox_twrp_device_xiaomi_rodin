@@ -21,6 +21,28 @@ if [ -f "$minuitwrp_src" ]; then
     cp -fp "$minuitwrp_src" "$minuitwrp_dst"
 fi
 
+firmware_variant="${RODIN_FIRMWARE_VARIANT:-cn}"
+if [ "$firmware_variant" = "global" ]; then
+    device_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    global_modules="$device_dir/prebuilt/global/modules"
+    for module in \
+        focaltech_touch_rodin.ko \
+        goodix_core_rodin.ko \
+        nxp_i2c.ko \
+        p73.ko \
+        scp.ko \
+        si_haptic.ko \
+        xiaomi_touch_rodin.ko; do
+        if [ ! -f "$global_modules/$module" ]; then
+            echo "missing Global recovery module: $global_modules/$module" >&2
+            exit 1
+        fi
+        cp -fp "$global_modules/$module" "$ramdisk/lib/modules/$module"
+    done
+    RODIN_FIRMWARE_VARIANT=global \
+        "$device_dir/tools/patch-recovery-touch-modules.sh" "$ramdisk/lib/modules"
+fi
+
 # The system-compatible image preserves the stock platform fragment's
 # first-stage runtime and modules while pruning its duplicate recovery
 # userspace. Recovery therefore only needs modules that are absent from stock

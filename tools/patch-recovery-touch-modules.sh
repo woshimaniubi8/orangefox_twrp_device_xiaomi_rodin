@@ -3,6 +3,7 @@
 set -euo pipefail
 
 MODULE_DIR="${1:-$(dirname "$0")/../recovery/root/lib/modules}"
+FIRMWARE_VARIANT="${RODIN_FIRMWARE_VARIANT:-cn}"
 SCP="$MODULE_DIR/scp.ko"
 GOODIX="$MODULE_DIR/goodix_core_rodin.ko"
 FOCALTECH="$MODULE_DIR/focaltech_touch_rodin.ko"
@@ -16,6 +17,12 @@ SCP_PATCHED_SHA256="ebae9554467e148256cfbab90f0b6d7943d2818ae0cf09bad8aec650bbd9
 GOODIX_PATCHED_SHA256="3c2fe7db061743134b715e5a7c361690c3fa36cfacb9c15c1e0bb122e51ac966"
 GOODIX_NO_THP_SHA256="24128b834c42cc81d24dd6072fb6dcce1891040949c4271c614b89b11763fba0"
 FOCALTECH_PATCHED_SHA256="da967ce3f94ecc81153ee91f7e06a2b48eda0526b857688016ef660844bc70b2"
+GLOBAL_SCP_STOCK_SHA256="b23492d891d88afcb00637a49b19b5fa460e2ee2c297d7436dd2ada22cffcd17"
+GLOBAL_GOODIX_STOCK_SHA256="c0e54ace6d081d949db7b900b0f10f890b7bf9e5eb763878f3c6874b806178d7"
+GLOBAL_FOCALTECH_STOCK_SHA256="87c41bce1aa64d855b685c5105ed177fe499968d44b802b48d7bd620697fe9da"
+GLOBAL_SCP_PATCHED_SHA256="f75c3dc21e7a0d7fa31b59933c42743722745389fde264de07561e44a899a385"
+GLOBAL_GOODIX_PATCHED_SHA256="9a057f0b86acf69ba5530eb0ff081703263b53850307abe6ac79db4a01b80be2"
+GLOBAL_FOCALTECH_PATCHED_SHA256="5806953c80ee0c88b1b4f89084ee06653bcdc57624ed97262a620690c2ae1ac4"
 
 read_hex() {
     od -An -v -tx1 -j "$2" -N 8 "$1" | tr -d ' \n'
@@ -71,6 +78,22 @@ restore_default_thp() {
     echo "restored goodix:default_thp raw-frame path at 0x12e08"
 }
 
+case "$FIRMWARE_VARIANT" in
+    cn) ;;
+    global)
+        SCP_STOCK_SHA256="$GLOBAL_SCP_STOCK_SHA256"
+        GOODIX_STOCK_SHA256="$GLOBAL_GOODIX_STOCK_SHA256"
+        FOCALTECH_STOCK_SHA256="$GLOBAL_FOCALTECH_STOCK_SHA256"
+        SCP_PATCHED_SHA256="$GLOBAL_SCP_PATCHED_SHA256"
+        GOODIX_PATCHED_SHA256="$GLOBAL_GOODIX_PATCHED_SHA256"
+        FOCALTECH_PATCHED_SHA256="$GLOBAL_FOCALTECH_PATCHED_SHA256"
+        ;;
+    *)
+        echo "unsupported RODIN_FIRMWARE_VARIANT: $FIRMWARE_VARIANT" >&2
+        exit 1
+        ;;
+esac
+
 [[ -f "$SCP" && -f "$GOODIX" && -f "$FOCALTECH" ]] || {
     echo "Android 16 SCP/Goodix/FocalTech modules are missing from $MODULE_DIR" >&2
     exit 1
@@ -80,17 +103,18 @@ scp_sha="$(sha256sum "$SCP" | cut -d' ' -f1)"
 goodix_sha="$(sha256sum "$GOODIX" | cut -d' ' -f1)"
 focaltech_sha="$(sha256sum "$FOCALTECH" | cut -d' ' -f1)"
 
-if [[ "$scp_sha" != "$SCP_STOCK_SHA256" && "$scp_sha" != "$SCP_PATCHED_SHA256" ]]; then
+if [[ "$scp_sha" != "$SCP_STOCK_SHA256" &&
+      ( -z "$SCP_PATCHED_SHA256" || "$scp_sha" != "$SCP_PATCHED_SHA256" ) ]]; then
     echo "refusing unrecognized scp.ko: $scp_sha" >&2
     exit 1
 fi
 if [[ "$focaltech_sha" != "$FOCALTECH_STOCK_SHA256" && \
-      "$focaltech_sha" != "$FOCALTECH_PATCHED_SHA256" ]]; then
+      ( -z "$FOCALTECH_PATCHED_SHA256" || "$focaltech_sha" != "$FOCALTECH_PATCHED_SHA256" ) ]]; then
     echo "refusing unrecognized focaltech_touch_rodin.ko: $focaltech_sha" >&2
     exit 1
 fi
 if [[ "$goodix_sha" != "$GOODIX_STOCK_SHA256" && \
-      "$goodix_sha" != "$GOODIX_PATCHED_SHA256" && \
+      ( -z "$GOODIX_PATCHED_SHA256" || "$goodix_sha" != "$GOODIX_PATCHED_SHA256" ) && \
       "$goodix_sha" != "$GOODIX_NO_THP_SHA256" ]]; then
     echo "refusing unrecognized goodix_core_rodin.ko: $goodix_sha" >&2
     exit 1
@@ -100,7 +124,13 @@ fi
 # original module ABI and symbol CRCs, but do not register the SCP platform
 # driver. Goodix still probes its AP-side SPI path; its SCP offload helpers are
 # disabled because their backing memory and IPI endpoint do not exist here.
-patch_return_zero "$SCP" $((0x20a8c)) "scp:init_module"
+if [[ "$FIRMWARE_VARIANT" == "global" ]]; then
+    # Global 6.6.89 moves .init.text by 0x178 bytes. The remaining AP-side
+    # touch helper offsets are unchanged and checked by patch_return_zero.
+    patch_return_zero "$SCP" $((0x20c04)) "scp:init_module"
+else
+    patch_return_zero "$SCP" $((0x20a8c)) "scp:init_module"
+fi
 patch_return_zero "$GOODIX" $((0x26e90)) "goodix:scp_tp_get_reserve_mem"
 patch_return_zero "$GOODIX" $((0x26f64)) "goodix:scp_tp_ipi_send"
 patch_return_zero "$GOODIX" $((0x27014)) "goodix:scp_tp_sendparam"

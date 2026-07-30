@@ -10,6 +10,7 @@
 - `recovery/root/init.recovery.keymint.rc`：为 OMAPI bridge 设置 vendor/system 运行时库搜索路径和 libc++ compatibility preload；在 `tee-supplicant` 就绪后并行启动 KeyMint、secure-element 与 NXP Weaver，不再以 bridge ready 属性阻塞 Weaver。
 - `BoardConfig.mk`、`recovery/root/init.recovery.bootctl.rc` 与 post-build repacker：OrangeFox 和 ROM updater 均使用 stock MediaTek AIDL BootControl；重打包器保留 binary，并将其 device VINTF fragment 放到 `/vendor/etc/vintf/manifest`，避免 `/system` framework VINTF 解析失败而使 Keystore2 崩溃。recovery rc 通过 compatibility shim 启动该服务，避免旧 HIDL fallback 的 UFS boot-region ioctl 使 slot 切换失败。
 - `tools/build-system-compatible-vendor-boot.sh`：增加 `RODIN_FIRMWARE_VARIANT=cn|global`，使最终镜像保留与目标系统相匹配的 type-1 platform ramdisk。
+- `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，先拉取 Git LFS blob，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。
 - 构建前检查、文件哈希清单和构建文档。
 
 这份补丁解决三个已定位的问题：原先 Soong 会把设备树中 Android 15 预编译 NDK 库与 Android 16 AIDL 生成模块混淆，导致 recovery 依赖解析失败；运行时的 bridge 则因找不到 `/vendor/lib64` 内的 NDK 库而无法启动，使 Weaver 被错误的 ready gate 无限阻塞；旧 HIDL BootControl fallback 在 rodin 上会使 UFS boot-region 设置失败并导致 slot 切换失败。它们分别影响可编译性、FBE synthetic-password 流程和 Virtual A/B ROM 更新后的 slot 处理。
@@ -33,6 +34,35 @@ FBE 已解密后的 `userdata` mapper 与动态分区不是同一类对象，不
 `OF_USE_DMCTL := 1`，将 `dmctl` 放入 Recovery；共享 patch 只在确认格式化 `/data` 时
 删除 `/dev/block/mapper/userdata`。命令失败或节点在最多一秒后仍存在时会终止格式化，
 不会继续向仍被映射占用的物理 userdata 块设备执行 `make_f2fs`。
+
+共享 patch 还实现了 rodin 单 Type-C 口的 USB OTG 状态机。此机型在 host 尚未被请求时
+不会打开 `otg_enable` 供电，因此不能以自动 Type-C source/partner 检测作为入口。用户在
+“挂载”页点 USB 浮动按钮后，状态机先把 `typec/port0/preferred_role` 设为 `source`，再将
+`sys.usb.config` 设为 `none`、启用 `otg_enable`、通过 `vbus_switch` 打开 stock DTB 中的
+`usb-otg-vbus` regulator，并把 `11201000.usb0` role switch 置为
+`host`；此时再于二十秒内插入 U 盘，按钮会变为 X，可显式停止。这避免 stock 的 sink
+偏好把被动 OTG 转接器错误协商为 `Attached.SNK`。随后只接受 `/sys/block` 中解析路径包含
+`/usb` 的 SCSI 盘，故内部 UFS `sda`、`sdb`、`sdc` 不会被误挂载。超时未枚举、按 X 或
+介质拔出时，状态机均会恢复 `device` role、之前的 MTP 状态和 sink 偏好；host 期间 ADB
+断开属于端口角色切换的预期行为。状态机绝不在 host 模式读取 role-switch 的 `role` 文件，
+避免这个内核上可能无限阻塞的 sysfs read。
+
+CN 运行时进一步证明 stock DTB 的 `xhci0@11200000` 带有
+`mediatek,usb-offload = <0x15b>`。该属性会令 MTU3 等待 Android USB audio offload
+provider；Recovery 中 provider 及其音频/基带依赖均未运行，因此 source 协商成功后仍会出现
+`offload not ready`，不会注册 USB host bus。`tools/patch-vendor-boot-dtb.py` 保留 MTK
+64-byte wrapper 与所有其他 DTB 节点，只从临时 inner FDT 删除该属性并同步 wrapper 的 DTB
+和总长度。`build-system-compatible-vendor-boot.sh` 只将这份临时 DTB 写入标准和
+disable-AVB 成品，绝不改写 `prebuilt/dtb/mt6899-rodin.dtb`。这避免将 ABI 相关的
+`usb_offload.ko`、音频和基带模块加入 Recovery。
+
+本仓库固定了 `relink_libraries` 对 `libprocessgroup_setup.so` 的一个增量构建问题。
+原规则把 `TARGET_RECOVERY_ROOT_OUT/system/lib64` 同时作为来源和目标；当恢复目录被清理后
+重建时，可能生成 ELF 大小正确但内容全零的文件。Recovery 的二阶段 `/system/bin/init`
+会在 OrangeFox 启动前加载该库，结果触发 `Attempted to kill init` kernel panic。共享 patch
+改从 `TARGET_OUT_SHARED_LIBRARIES` 的已链接库复制；post-build repacker 还会解压 recovery
+fragment 并验证该库以 `7f 45 4c 46` 开头。检查失败时不会替换最终的
+`*-system-compatible.img`。
 
 ## 应用
 
@@ -75,6 +105,15 @@ device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
 | type-1 fragment SHA-256 | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
 | DTB SHA-256 | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
 
+`prebuilt/global/modules/` 的七个 6.6.89 Recovery-only 模块通过 Git LFS 保存。文本 patch
+只包含它们的 LFS pointer，不包含模块字节；推送设备树前必须把实际模块一并加入并上传 LFS，
+否则 GitHub Actions 的 `git lfs pull` 无法取得 Global 构建输入：
+
+```bash
+git add .gitattributes prebuilt/global/modules/ prebuilt/README.md
+git lfs status
+```
+
 然后使用：
 
 ```bash
@@ -89,4 +128,4 @@ RODIN_FIRMWARE_VARIANT=global \
   device/xiaomi/rodin/tools/verify-build-inputs.sh "$PWD"
 ```
 
-Global 输出为 `OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img`，不能用于 CN；默认 CN 输出也不能用于 Global。
+Global 输出为 `OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img`，不能用于 CN；默认 CN 输出也不能用于 Global。repacker 会将最终 Recovery fragment 中的 7 个 ABI 相关模块与由 Global 输入和固定偏移 patch 生成的预期内容逐字节比较；若复用了 CN 的 recovery fragment，构建会停止而不会输出 Global 成品。

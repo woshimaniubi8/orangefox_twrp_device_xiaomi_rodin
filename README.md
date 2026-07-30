@@ -34,14 +34,54 @@ device's validated 60 MB combined-ramdisk limit. The Mount menu's "USB
 Storage" gadget action remains disabled because it is unrelated to host-mode
 OTG and would export phone storage to a computer.
 
-For the first on-device test, boot recovery, attach one OTG flash drive, and
-verify both the mount and the selected block device before performing any write:
+The same Type-C port cannot be a computer gadget and a USB host at once. On
+rodin, VBUS is not enabled until Recovery explicitly selects host mode, so
+automatic Type-C role detection cannot discover an unpowered flash drive. The
+Mount page therefore exposes a USB floating button only on hardware with the
+required `otg_enable`, `vbus_switch`, and role-switch nodes. Disconnect the
+computer, tap the USB button, then attach the OTG drive within twenty seconds;
+the icon becomes an X while host mode is active. Recovery sets the Type-C
+preference to source, unbinds the gadget, enables both charger OTG policy and
+the `usb-otg-vbus` regulator through `vbus_switch`, and waits for a USB-bus
+disk. A failed
+attempt, pressing X, or later drive removal restores
+device mode and the previous MTP state automatically. The monitor never reads
+the role-switch `role` attribute while in host mode because this kernel can
+block that read indefinitely.
+
+The Global OS3.0.301.0.WOJMIXM image is built from its own platform ramdisk.
+Its stock DTB is byte-identical to the CN baseline, while its modules use the
+6.6.89 ABI rather than CN's 6.6.77. The callback replaces the seven
+Recovery-only touch, haptic, and eSE modules with the matching Global inputs
+and applies their checked SCP/Goodix/FocalTech patch. The repacker also fails
+unless Global's Type-C/OTG stack exposes `vbus_switch`; do not flash the CN
+image on Global firmware.
+
+The stock DTB additionally makes the xHCI node depend on Android's USB audio
+offload service. Recovery deliberately does not load that audio/modem stack;
+without the service, MTU3 logs `offload not ready` and never registers a host
+bus even after Type-C reaches `Attached.SRC`. The vendor-boot repacker removes
+only `mediatek,usb-offload` from a temporary copy of the wrapped stock DTB,
+then updates the wrapper lengths before signing. The stock DTB remains
+unchanged, and the normal xHCI host path needs no extra recovery modules.
+
+For the first on-device test, boot recovery and verify the computer-side state
+first:
 
 ```bash
 adb shell 'lsmod | grep -E "xhci|mtu3|usb"'
+adb shell 'cat /sys/class/typec/port0/power_role; cat /sys/class/usb_role/11201000.usb0-role-switch/role'
+```
+
+Then disconnect the computer, open **Mount**, tap the USB floating button, and
+attach one OTG flash drive within twenty seconds. Inspect `/usb_otg` from the
+Recovery file manager. ADB deliberately disconnects while host mode is active.
+Press the X button or unplug the drive before reconnecting the computer,
+then verify the selected block device and transition log:
+
+```bash
 adb shell 'for d in /sys/block/sd*/device; do readlink -f "$d"; done 2>/dev/null | grep /usb'
-adb shell 'ls -l /dev/block/sd* 2>/dev/null; mount | grep usb_otg'
-adb shell 'grep -E "USB OTG|usb_otg|ntfs|exfat" /tmp/recovery.log | tail -80'
+adb shell 'grep -E "USB OTG|usb_otg" /tmp/recovery.log | tail -100'
 ```
 
 The expected mount point is `/usb_otg`. Test FAT and exFAT media. A drive that

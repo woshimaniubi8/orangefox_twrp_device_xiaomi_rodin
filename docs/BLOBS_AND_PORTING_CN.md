@@ -34,7 +34,12 @@
 | `proprietary/odm/firmware/rodin_gtp_thp_config*.ini` | Android 16 ODM firmware | Goodix THP 配置 |
 | `proprietary/touch/lib64/*` | Android 16 system/vendor/odm 依赖闭包 | 隔离到 `/system/lib64/rodin-touch`，避免污染 Recovery 全局 libc++ |
 
-303 `vendor_dlkm` 同时提供 Goodix 和 FocalTech 驱动，ODM 也提供对应的两个 TouchReport 算法。FocalTech 的 6 个 SCP helper 已按与 Goodix 相同的原则禁用，AP SPI/IRQ/THP 路径保持不变；这条路径仍需 FocalTech 设备实测后才能标记为稳定。
+CN 3.0.303 `vendor_dlkm` 同时提供 Goodix 和 FocalTech 驱动，ODM 也提供对应的两个 TouchReport 算法。FocalTech 的 6 个 SCP helper 已按与 Goodix 相同的原则禁用，AP SPI/IRQ/THP 路径保持不变；这条路径仍需 FocalTech 设备实测后才能标记为稳定。
+
+Global OS3.0.301 使用 6.6.89 ABI，不能复用上述 CN 6.6.77 的 Recovery-only 模块。对应的
+`scp`、`xiaomi_touch_rodin`、Goodix、FocalTech、`nxp_i2c`、`p73` 与 `si_haptic` 位于
+`prebuilt/global/modules/`。`fox_callback.sh` 只在 `RODIN_FIRMWARE_VARIANT=global` 时替换它们；
+触摸 patch 脚本对 Global 的 `scp:init_module` 使用已验证的 `0x20c04` 文件偏移。
 
 不能直接加载原始 `scp.ko`。实机 pstore 已确认它会在缺少 SCP reserved-memory 的 Recovery 环境中于 `scp_region_info_init()` 触发 kernel panic。
 

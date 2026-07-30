@@ -95,7 +95,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ccache cpio curl flex g++-multilib \
+            bc bison build-essential ccache cpio curl device-tree-compiler flex g++-multilib \
             gcc-multilib git git-lfs gnupg gperf imagemagick \
             lib32ncurses-dev lib32readline-dev lib32z1-dev libelf-dev \
             liblz4-tool libncurses-dev libsdl1.2-dev libssl-dev libxml2 \
@@ -203,8 +203,24 @@ jobs:
           heartbeat_pid=$!
           trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
 
-          repo sync -c -j4 --retry-fetches=3 \
-            --no-clone-bundle --no-tags --optimized-fetch
+          sync_succeeded=0
+          for sync_attempt in 1 2 3; do
+            if repo sync -c -j4 --retry-fetches=3 \
+              --no-clone-bundle --no-tags --optimized-fetch; then
+              sync_succeeded=1
+              break
+            fi
+
+            if [[ "$sync_attempt" -lt 3 ]]; then
+              delay_seconds=$((sync_attempt * 20))
+              echo "::warning::OrangeFox source sync attempt ${sync_attempt} failed; retrying in ${delay_seconds}s."
+              sleep "$delay_seconds"
+            fi
+          done
+          if [[ "$sync_succeeded" -ne 1 ]]; then
+            echo "::error::OrangeFox source sync failed after three complete attempts." >&2
+            exit 1
+          fi
 
           kill "$heartbeat_pid" 2>/dev/null || true
           trap - EXIT

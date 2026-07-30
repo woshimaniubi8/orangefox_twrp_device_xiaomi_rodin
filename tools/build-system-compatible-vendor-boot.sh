@@ -34,8 +34,9 @@ MKBOOTIMG="${PRODUCT_OUT%/target/product/rodin}/host/linux-x86/bin/mkbootimg"
 MKBOOTFS="${PRODUCT_OUT%/target/product/rodin}/host/linux-x86/bin/mkbootfs"
 AVBTOOL="${PRODUCT_OUT%/target/product/rodin}/host/linux-x86/bin/avbtool"
 UNPACK_BOOTIMG="${TOP_DIR}/system/tools/mkbootimg/unpack_bootimg.py"
+DTB_PATCHER="${DEVICE_DIR}/tools/patch-vendor-boot-dtb.py"
 
-for file in "$STOCK_RAMDISK" "$STOCK_DTB" "$RECOVERY_LZ4" "$LZ4" "$MKBOOTIMG" "$MKBOOTFS" "$AVBTOOL" "$UNPACK_BOOTIMG"; do
+for file in "$STOCK_RAMDISK" "$STOCK_DTB" "$RECOVERY_LZ4" "$LZ4" "$MKBOOTIMG" "$MKBOOTFS" "$AVBTOOL" "$UNPACK_BOOTIMG" "$DTB_PATCHER"; do
     if [ ! -f "$file" ]; then
         echo "missing required build input: $file" >&2
         exit 1
@@ -45,6 +46,12 @@ command -v python3 >/dev/null 2>&1 || {
     echo "missing required host command: python3" >&2
     exit 1
 }
+for command_name in fdtget fdtput strings; do
+    command -v "$command_name" >/dev/null 2>&1 || {
+        echo "missing required host command: $command_name (install device-tree-compiler)" >&2
+        exit 1
+    }
+done
 
 check_sha256() {
     local expected="$1"
@@ -78,9 +85,82 @@ disable_avb_unsigned_image="${work_dir}/vendor_boot-disable-avb.img"
 disable_avb_bootconfig="${work_dir}/vendor_boot-disable-avb.bootconfig"
 disable_avb_inspect_dir="${work_dir}/vendor_boot-disable-avb-inspect"
 disable_avb_verify_image="${work_dir}/vendor_boot.img"
+patched_dtb="${work_dir}/mt6899-rodin-no-usb-offload.dtb"
+
+# Android's USB audio offload node makes mtu3 reject host-mode transitions
+# until an audio/MD stack registers an offload provider. Recovery does not run
+# that stack, so remove only this optional xHCI property from a temporary DTB.
+python3 "$DTB_PATCHER" --input "$STOCK_DTB" --output "$patched_dtb"
 
 "$LZ4" -d -f "$RECOVERY_LZ4" "$recovery_cpio" >/dev/null
 "$LZ4" -d -f "$STOCK_RAMDISK" "$platform_cpio" >/dev/null
+
+verify_recovery_elf() {
+    local cpio_file="$1" archive_path="$2" extracted_file
+
+    extracted_file="${work_dir}/$(basename "$archive_path")"
+    if ! cpio -it --quiet < "$cpio_file" | grep -E "^(\./)?${archive_path}$" >/dev/null; then
+        echo "recovery ramdisk is missing required ELF: $archive_path" >&2
+        exit 1
+    fi
+    cpio -i --quiet --to-stdout "$archive_path" < "$cpio_file" > "$extracted_file"
+    python3 - "$extracted_file" "$archive_path" <<'PY'
+import pathlib
+import sys
+
+library = pathlib.Path(sys.argv[1])
+archive_path = sys.argv[2]
+if library.read_bytes()[:4] != b"\x7fELF":
+    raise SystemExit(f"recovery ramdisk has invalid ELF: {archive_path}")
+PY
+}
+
+# Recovery second-stage init links this library before OrangeFox userspace is
+# available. Reject a malformed payload here rather than producing a vendor
+# boot image that panics at the device logo.
+verify_recovery_elf "$recovery_cpio" system/lib64/libprocessgroup_setup.so
+
+verify_global_recovery_modules() {
+    local expected_dir module archive_path extracted_module
+
+    if [ "$FIRMWARE_VARIANT" != "global" ]; then
+        return
+    fi
+
+    # The Global kernel is 6.6.89 while CN is 6.6.77. Build an expected set
+    # from the immutable Global inputs, apply the same recovery-only patches,
+    # then compare it byte-for-byte with the generated recovery fragment.
+    # This rejects a stale CN recovery.cpio before it can be paired with a
+    # Global platform ramdisk.
+    expected_dir="${work_dir}/global-recovery-modules"
+    mkdir -p "$expected_dir"
+    cp -a "${DEVICE_DIR}/prebuilt/global/modules/." "$expected_dir/"
+    RODIN_FIRMWARE_VARIANT=global \
+        "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" "$expected_dir" >/dev/null
+
+    for module in \
+        focaltech_touch_rodin.ko \
+        goodix_core_rodin.ko \
+        nxp_i2c.ko \
+        p73.ko \
+        scp.ko \
+        si_haptic.ko \
+        xiaomi_touch_rodin.ko; do
+        archive_path="lib/modules/${module}"
+        extracted_module="${work_dir}/global-${module}"
+        if ! cpio -it --quiet < "$recovery_cpio" | grep -E "^(\./)?${archive_path}$" >/dev/null; then
+            echo "Global recovery ramdisk is missing required module: ${module}" >&2
+            exit 1
+        fi
+        cpio -i --quiet --to-stdout "$archive_path" < "$recovery_cpio" > "$extracted_module"
+        if ! cmp -s "$expected_dir/$module" "$extracted_module"; then
+            echo "Global recovery module does not match verified 6.6.89 input: ${module}" >&2
+            exit 1
+        fi
+    done
+}
+
+verify_global_recovery_modules
 
 module_count="$(cpio -it --quiet < "$recovery_cpio" | awk '/^lib\/modules\/.*\.ko$/ { count++ } END { print count + 0 }')"
 if [ "$module_count" -gt 7 ]; then
@@ -170,6 +250,37 @@ for essential in \
         exit 1
     fi
 done
+
+verify_otg_platform_stack() {
+    local root="$1" module
+
+    # These modules come from the selected stock platform fragment, rather
+    # than the CN-specific recovery fragment. This keeps Global's 6.6.89
+    # module ABI intact while Recovery drives the common Type-C sysfs nodes.
+    for module in \
+        charger_class.ko \
+        extcon-mtk-usb.ko \
+        mt6375-charger.ko \
+        mtk_charger_framework.ko \
+        mtu3.ko \
+        tcpc_class.ko \
+        tcpc_mt6375.ko \
+        xhci-mtk-hcd-v2.ko; do
+        if [ ! -f "$root/lib/modules/$module" ]; then
+            echo "${FIRMWARE_VARIANT} platform ramdisk is missing OTG module: $module" >&2
+            exit 1
+        fi
+    done
+
+    # extcon-mtk-usb owns the usb-otg-vbus regulator exposed by Recovery as
+    # /sys/devices/platform/extcon-usb/vbus_switch.
+    if ! strings -a "$root/lib/modules/extcon-mtk-usb.ko" | grep -qx 'vbus_switch'; then
+        echo "${FIRMWARE_VARIANT} extcon-mtk-usb lacks the vbus_switch control" >&2
+        exit 1
+    fi
+}
+
+verify_otg_platform_stack "$platform_root"
 
 platform_module_count="$(find "$platform_root/lib/modules" -maxdepth 1 -type f -name '*.ko' | wc -l)"
 if [ "$platform_module_count" -ne 244 ]; then
@@ -273,7 +384,7 @@ disable_avb_total_ramdisk_size="$(check_combined_ramdisk_size disable-avb "$disa
 build_vendor_boot() {
     local image="$1" bootconfig="$2" platform_lz4="$3" recovery_lz4="$4"
     local -a mkbootimg_args=(
-        --dtb "$STOCK_DTB"
+        --dtb "$patched_dtb"
         --base 0x3fff8000
         --pagesize 4096
         --vendor_cmdline "bootopt=64S3,32N2,64N2 erofs.reserved_pages=64"

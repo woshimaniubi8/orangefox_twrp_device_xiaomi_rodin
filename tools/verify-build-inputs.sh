@@ -15,7 +15,7 @@ case "${RODIN_FIRMWARE_VARIANT:-cn}" in
     *) fail "unsupported RODIN_FIRMWARE_VARIANT: ${RODIN_FIRMWARE_VARIANT} (expected cn or global)" ;;
 esac
 
-for command_name in bash cut file git grep python3 sed sha256sum sort stat; do
+for command_name in bash cut fdtget fdtput file git grep python3 sed sha256sum sort stat strings; do
     command -v "${command_name}" >/dev/null 2>&1 || \
         fail "required host command not found: ${command_name}"
 done
@@ -74,11 +74,12 @@ check_contains() {
 check_file "${DEVICE_DIR}/patches/orangefox-recovery.patch"
 check_file "${DEVICE_DIR}/patches/orangefox-build-make.patch"
 check_file "${DEVICE_DIR}/tools/import-global-firmware-inputs.sh"
+check_file "${DEVICE_DIR}/tools/patch-vendor-boot-dtb.py"
 check_file "${DEVICE_DIR}/manifests/device-blobs.sha256"
 check_file "${DEVICE_DIR}/manifests/orangefox-fox_14.1-pinned.xml"
 check_sha256 "${DEVICE_DIR}/patches/orangefox-build-make.patch" 5f2d3f43a4d78eee6d560a4a169df30fc95de6fa2ed294e3210e684a641a8329
-check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 4159fe49b39cfacb3950666f55701b4fa7888fc8ac6add43a6075954d3bdfd82
-check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 38c8ba245974696fb5352040b25fb189486e00f987381a01d45802df1344be96
+check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 2e4af1a0511131b1364bdea36233b30ab6a258389b61e262fc214b624cddfa39
+check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" b4d8a7b2457d2a61ff77313e25d1822435d2174cb095d0faa42f7f28e0800b23
 
 if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
     if ! python3 "${DEVICE_DIR}/tools/verify-source-manifest.py" "${TOP_DIR}" \
@@ -105,6 +106,23 @@ check_sha256 "${DEVICE_DIR}/prebuilt/vendor_boot_stock.img" 499bb470719b790baf90
 check_sha256 "${DEVICE_DIR}/prebuilt/vendor_ramdisk00" 192977d50a121f7a5ddfab0212488ef0dbb0326cad802ce9d664649967a9845c
 check_size "${DEVICE_DIR}/prebuilt/global/vendor_ramdisk00" 29235080
 check_sha256 "${DEVICE_DIR}/prebuilt/global/vendor_ramdisk00" 349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731
+for module in \
+    focaltech_touch_rodin.ko \
+    goodix_core_rodin.ko \
+    nxp_i2c.ko \
+    p73.ko \
+    scp.ko \
+    si_haptic.ko \
+    xiaomi_touch_rodin.ko; do
+    check_file "${DEVICE_DIR}/prebuilt/global/modules/${module}"
+done
+check_sha256 "${DEVICE_DIR}/prebuilt/global/modules/scp.ko" b23492d891d88afcb00637a49b19b5fa460e2ee2c297d7436dd2ada22cffcd17
+check_sha256 "${DEVICE_DIR}/prebuilt/global/modules/xiaomi_touch_rodin.ko" e3532ef88d039eddf35c6d067c9d6be3161972182ffd9c0514ada6fc6291035b
+check_sha256 "${DEVICE_DIR}/prebuilt/global/modules/goodix_core_rodin.ko" c0e54ace6d081d949db7b900b0f10f890b7bf9e5eb763878f3c6874b806178d7
+check_sha256 "${DEVICE_DIR}/prebuilt/global/modules/focaltech_touch_rodin.ko" 87c41bce1aa64d855b685c5105ed177fe499968d44b802b48d7bd620697fe9da
+check_sha256 "${DEVICE_DIR}/prebuilt/global/modules/nxp_i2c.ko" 8a8ebd267c2715d3efd9dea4da79a63dcc061ff3a0edbdd14a52d947b4b3d7be
+check_sha256 "${DEVICE_DIR}/prebuilt/global/modules/p73.ko" 712cbc4503a2906ca828b1a86add1b5044c3eb892eaeb9c1bbd99450e12fb9a0
+check_sha256 "${DEVICE_DIR}/prebuilt/global/modules/si_haptic.ko" e48b06dc688f5eae1b5568587376aea215b2ae9bb8310867e33df563e652c5ad
 check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/scp.ko" ebae9554467e148256cfbab90f0b6d7943d2818ae0cf09bad8aec650bbd99310
 check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/goodix_core_rodin.ko" 3c2fe7db061743134b715e5a7c361690c3fa36cfacb9c15c1e0bb122e51ac966
 check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/focaltech_touch_rodin.ko" da967ce3f94ecc81153ee91f7e06a2b48eda0526b857688016ef660844bc70b2
@@ -140,6 +158,12 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
 check_contains "${DEVICE_DIR}/fox_callback.sh" \
     'focaltech_touch_rodin.ko|goodix_core_rodin.ko' \
     "FocalTech module is not retained in the final ramdisk"
+check_contains "${DEVICE_DIR}/fox_callback.sh" \
+    'prebuilt/global/modules' \
+    "Global module replacement is not configured"
+check_contains "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
+    'GLOBAL_SCP_STOCK_SHA256' \
+    "Global touch patch hashes are missing"
 check_contains "${DEVICE_DIR}/Android.bp" \
     'name: "rodin_android.hardware.secure_element-V1-ndk"' \
     "Recovery secure-element prebuilt module is missing"
@@ -194,6 +218,24 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
 check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
     'verify_image --image "$disable_avb_verify_image"' \
     "disable-avb vendor_boot AVB footer is not verified"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'verify_recovery_elf' \
+    "vendor_boot repacker does not validate the recovery init ELF"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'patch-vendor-boot-dtb.py' \
+    "vendor_boot repacker does not patch the USB offload DTB dependency"
+check_contains "${DEVICE_DIR}/tools/patch-vendor-boot-dtb.py" \
+    'mediatek,usb-offload' \
+    "DTB patcher does not remove the xHCI USB offload dependency"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'verify_otg_platform_stack' \
+    "vendor_boot repacker does not validate the selected firmware OTG stack"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    "vbus_switch" \
+    "vendor_boot repacker does not validate the Type-C VBUS control"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    "verify_global_recovery_modules" \
+    "vendor_boot repacker does not reject a CN recovery fragment for Global"
 check_contains "${DEVICE_DIR}/BoardConfig.mk" \
     'OF_USE_AIDL_BOOT_CONTROL := 1' \
     "OrangeFox is not configured to use AIDL BootControl"
@@ -248,6 +290,12 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
         fail "Python syntax check failed: tools/verify-source-manifest.py"
 fi
 
+if [[ -f "${DEVICE_DIR}/tools/patch-vendor-boot-dtb.py" ]]; then
+    python3 -c 'import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_text(), sys.argv[1], "exec")' \
+        "${DEVICE_DIR}/tools/patch-vendor-boot-dtb.py" || \
+        fail "Python syntax check failed: tools/patch-vendor-boot-dtb.py"
+fi
+
 if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
     for marker in \
         OF_SKIP_POST_DECRYPT_THEME_RELOAD \
@@ -255,6 +303,9 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
         fallback_face \
         processKeyChord \
         Resolve_UsbOtg_Block_Device \
+        tw_usb_otg_host_request \
+        'USB OTG host mode requested by user' \
+        'TARGET_OUT_SHARED_LIBRARIES)/libprocessgroup_setup.so' \
         "skipping logical partition alias" \
         "Decrypted userdata mapper is still present"; do
         search_tree "$marker" "${TOP_DIR}/bootable/recovery" || \

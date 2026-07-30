@@ -85,10 +85,9 @@ rodin 在删除 `.repo` 后，源码与完整 `out/` 的构建峰值仍约为 83
 时继续同步和构建。看到 `df` 中约 63 GiB 空闲，只说明 Job 已经被 GitHub
 托管 VM 调度，尚不足以证明完整构建可完成。
 
-同步完成并删除 `.repo` 后，工作流会再次要求至少 70 GiB 可用空间才启动
-Soong。CN 与 Global 使用不同的并发组，手动 Global 构建不会取消正在运行的
-CN 构建；CN 保留原并发键，因此下一次推送也会自动取消仍在排队的旧
-self-hosted CN 任务。
+同步完成并删除 `.repo` 后，工作流会再次要求至少 35 GiB 可用空间才启动
+Soong。每次工作流都会构建 CN 和 Global 两个矩阵项；同一分支的新工作流会通过
+并发组取消该分支仍在运行或排队的旧工作流。
 
 只有 `main` 上成功的构建会创建 prerelease。其他 ref 的手动构建仍会上传
 artifact，但不会向仓库发布 release。
@@ -145,6 +144,22 @@ recovery patch 包含：
 - rodin 解密后禁止完整 GUI package 重建，避免 recovery `SIGSEGV`。
 - 解密页面显示前加载默认简体中文。
 - MiSans 主题选择项和 SIH6887 震动节点支持。
+- USB OTG host 状态机：断开电脑后，在“挂载”页先点 USB 浮动按钮，再于 20 秒内插入
+  U 盘。它会临时将 Type-C 首选电源角色设为 source、解绑 ADB/MTP、使用 `vbus_switch` 打开
+  `usb-otg-vbus` regulator 并切换 host；失败、
+  按 X 停止或拔出后恢复 device/MTP 和 sink 偏好。内部 UFS 的 `sdX` 节点始终不会被识别为
+  OTG 介质，且 host 期间不会读取会阻塞的 role-switch `role` 属性。
+- Global OS3.0.301.0.WOJMIXM 必须设置 `RODIN_FIRMWARE_VARIANT=global`。它使用自己的
+  6.6.89 platform ramdisk；最终打包还会替换 7 个 ABI 相关的触摸、haptic 和 eSE 模块，
+  并应用 Global 固定偏移的 SCP/Goodix/FocalTech Recovery patch。repacker 会验证其中的
+  Type-C/OTG 模块及 `vbus_switch`，并将最终 Recovery 的 7 个模块逐字节比对为已修补的
+  Global 输入，防止 CN recovery fragment 被误用；DTB 与 CN 基线完全相同，仍会移除 xHCI 的
+  `mediatek,usb-offload` 属性。
+- stock DTB 的 xHCI 节点依赖 Android USB audio offload；Recovery 不加载其音频/基带依赖。
+  repacker 会用 `fdtput` 在临时 DTB 删除唯一的 `mediatek,usb-offload` 属性，并保留、更新
+  MTK wrapper 长度字段。构建主机必须提供 `device-tree-compiler`（`fdtget`、`fdtput`）。
+- Recovery 二阶段 `libprocessgroup_setup.so` 的构建来源修复，并在最终重打包前验证其
+  ELF magic；若该检查失败，停止构建，不能刷写输出目录中遗留的旧镜像。
 - Virtual A/B `Format Data` 时保留 `vendor -> vendor_a` 等无槽位 mapper 别名，避免在 pending-merge 检查前错误删除别名而中止格式化；`*_a`/`*_b` 与 `-cow` 的精确清理不变。
 - Android 16 FBE 已解密后，先用 Recovery 内置 `dmctl` 释放 `/dev/block/mapper/userdata`，确认映射消失后才格式化物理 userdata 分区；删除失败会中止操作。
 
