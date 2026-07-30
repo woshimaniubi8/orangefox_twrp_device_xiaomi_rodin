@@ -161,6 +161,15 @@ check_contains "${DEVICE_DIR}/fox_callback.sh" \
 check_contains "${DEVICE_DIR}/fox_callback.sh" \
     'prebuilt/global/modules' \
     "Global module replacement is not configured"
+check_contains "${DEVICE_DIR}/build-lowmem.sh" \
+    'prepare_global_recovery_modules' \
+    "Global modules are not prepared before the Make build"
+check_contains "${DEVICE_DIR}/device.mk" \
+    'RODIN_GLOBAL_RECOVERY_MODULE_DIR' \
+    "Global module PRODUCT_COPY_FILES source is not configured"
+check_contains "${DEVICE_DIR}/BoardConfig.mk" \
+    'RODIN_FIRMWARE_VARIANT=$(RODIN_FIRMWARE_VARIANT)' \
+    "Recovery callback does not receive the selected firmware profile"
 check_contains "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
     'GLOBAL_SCP_STOCK_SHA256' \
     "Global touch patch hashes are missing"

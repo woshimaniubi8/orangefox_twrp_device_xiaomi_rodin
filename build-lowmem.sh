@@ -29,6 +29,7 @@ export FOX_BUILD_DEVICE="${FOX_BUILD_DEVICE:-rodin}"
 export FOX_AB_DEVICE="${FOX_AB_DEVICE:-1}"
 export FOX_VIRTUAL_AB_DEVICE="${FOX_VIRTUAL_AB_DEVICE:-1}"
 export OF_FORCE_PREBUILT_KERNEL="${OF_FORCE_PREBUILT_KERNEL:-1}"
+export RODIN_FIRMWARE_VARIANT="${RODIN_FIRMWARE_VARIANT:-cn}"
 export NINJA_ARGS="${NINJA_ARGS:--j${OF_BUILD_JOBS} -l${OF_BUILD_JOBS}}"
 export SOONG_UI_NINJA_ARGS="${SOONG_UI_NINJA_ARGS:--j${OF_BUILD_JOBS} -l${OF_BUILD_JOBS}}"
 export NINJA_HIGHMEM_NUM_JOBS="${NINJA_HIGHMEM_NUM_JOBS:-1}"
@@ -73,6 +74,45 @@ fi
 LOG_FILE="${LOG_DIR}/rodin-lowmem-$(date +%Y%m%d-%H%M%S).log"
 
 cd "${TOP_DIR}"
+prepare_global_recovery_modules() {
+    local module_dir module
+
+    case "${RODIN_FIRMWARE_VARIANT}" in
+        cn)
+            unset RODIN_GLOBAL_RECOVERY_MODULE_DIR
+            return
+            ;;
+        global)
+            ;;
+        *)
+            echo "unsupported RODIN_FIRMWARE_VARIANT: ${RODIN_FIRMWARE_VARIANT}" >&2
+            exit 1
+            ;;
+    esac
+
+    # PRODUCT_COPY_FILES can run after BOARD_RECOVERY_IMAGE_PREPARE. Prepare
+    # Global's patched ABI-specific modules before Make assembles the root so
+    # either ordering produces the same final recovery fragment.
+    module_dir="${OUT_DIR}/target/product/rodin/rodin-global-recovery-modules"
+    install -d "${module_dir}"
+    for module in \
+        focaltech_touch_rodin.ko \
+        goodix_core_rodin.ko \
+        nxp_i2c.ko \
+        p73.ko \
+        scp.ko \
+        si_haptic.ko \
+        xiaomi_touch_rodin.ko; do
+        cp -fp "${DEVICE_DIR}/prebuilt/global/modules/${module}" "${module_dir}/${module}"
+    done
+    RODIN_FIRMWARE_VARIANT=global \
+        "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" "${module_dir}"
+    export RODIN_GLOBAL_RECOVERY_MODULE_DIR="${module_dir}"
+    echo "using prepared Global recovery modules: ${RODIN_GLOBAL_RECOVERY_MODULE_DIR}"
+}
+
+prepare_global_recovery_modules
+
 set +u
 source build/envsetup.sh
 lunch twrp_rodin-ap2a-eng
@@ -88,8 +128,13 @@ fi
 echo "log: ${LOG_FILE}"
 echo "targets: ${TARGETS[*]}"
 
+mka_profile_args=("RODIN_FIRMWARE_VARIANT=${RODIN_FIRMWARE_VARIANT}")
+if [ "${RODIN_FIRMWARE_VARIANT}" = "global" ]; then
+    mka_profile_args+=("RODIN_GLOBAL_RECOVERY_MODULE_DIR=${RODIN_GLOBAL_RECOVERY_MODULE_DIR}")
+fi
+
 set +e
-mka -j"${OF_BUILD_JOBS}" "${TARGETS[@]}" 2>&1 | tee "${LOG_FILE}"
+mka -j"${OF_BUILD_JOBS}" "${mka_profile_args[@]}" "${TARGETS[@]}" 2>&1 | tee "${LOG_FILE}"
 status=${PIPESTATUS[0]}
 set -e
 

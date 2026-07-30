@@ -77,7 +77,7 @@ BOARD_USES_METADATA_PARTITION := true
 
 # Prune the full ncurses database after OrangeFox finishes preparing the
 # ramdisk, while retaining common terminal definitions.
-BOARD_RECOVERY_IMAGE_PREPARE = bash $(DEVICE_PATH)/fox_callback.sh $(TARGET_RECOVERY_ROOT_OUT) --first-call
+BOARD_RECOVERY_IMAGE_PREPARE = RODIN_FIRMWARE_VARIANT=$(RODIN_FIRMWARE_VARIANT) bash $(DEVICE_PATH)/fox_callback.sh $(TARGET_RECOVERY_ROOT_OUT) --first-call
 
 AB_OTA_UPDATER := true
 # The retained stock MediaTek service is AIDL. This also makes OrangeFox's

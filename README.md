@@ -51,11 +51,11 @@ block that read indefinitely.
 
 The Global OS3.0.301.0.WOJMIXM image is built from its own platform ramdisk.
 Its stock DTB is byte-identical to the CN baseline, while its modules use the
-6.6.89 ABI rather than CN's 6.6.77. The callback replaces the seven
-Recovery-only touch, haptic, and eSE modules with the matching Global inputs
-and applies their checked SCP/Goodix/FocalTech patch. The repacker also fails
-unless Global's Type-C/OTG stack exposes `vbus_switch`; do not flash the CN
-image on Global firmware.
+6.6.89 ABI rather than CN's 6.6.77. Before Make assembles the recovery root,
+the build creates a patched seven-module Global source directory and directs
+`PRODUCT_COPY_FILES` to it. This makes the module set independent of callback
+ordering. The repacker also fails unless Global's Type-C/OTG stack exposes
+`vbus_switch`; do not flash the CN image on Global firmware.
 
 The stock DTB additionally makes the xHCI node depend on Android's USB audio
 offload service. Recovery deliberately does not load that audio/modem stack;

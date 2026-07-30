@@ -7,7 +7,7 @@ index 357d6e8..cbc485f 100644
  prebuilt/* filter=lfs diff=lfs merge=lfs -text
 +prebuilt/global/modules/*.ko filter=lfs diff=lfs merge=lfs -text
 diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
-index 049c733..9b4b56e 100644
+index 049c733..ee46231 100644
 --- a/.github/workflows/build.yml
 +++ b/.github/workflows/build.yml
 @@ -95,7 +95,7 @@ jobs:
@@ -19,15 +19,6 @@ index 049c733..9b4b56e 100644
              gcc-multilib git git-lfs gnupg gperf imagemagick \
              lib32ncurses-dev lib32readline-dev lib32z1-dev libelf-dev \
              liblz4-tool libncurses-dev libsdl1.2-dev libssl-dev libxml2 \
-@@ -182,7 +182,7 @@ jobs:
-           git config --global protocol.file.allow always
-           # GitLab occasionally resets long HTTP/2 fetches from hosted runners.
-           # Keep the transport reproducible and tolerate slow pack transfers.
--          # git config --global http.version HTTP/1.1
-+          git config --global http.version HTTP/1.1
-           git config --global http.lowSpeedLimit 1
-           git config --global http.lowSpeedTime 600
- 
 @@ -203,8 +203,24 @@ jobs:
            heartbeat_pid=$!
            trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
@@ -55,8 +46,21 @@ index 049c733..9b4b56e 100644
  
            kill "$heartbeat_pid" 2>/dev/null || true
            trap - EXIT
+diff --git a/BoardConfig.mk b/BoardConfig.mk
+index 65b4845..22ad69a 100644
+--- a/BoardConfig.mk
++++ b/BoardConfig.mk
+@@ -77,7 +77,7 @@ BOARD_USES_METADATA_PARTITION := true
+ 
+ # Prune the full ncurses database after OrangeFox finishes preparing the
+ # ramdisk, while retaining common terminal definitions.
+-BOARD_RECOVERY_IMAGE_PREPARE = bash $(DEVICE_PATH)/fox_callback.sh $(TARGET_RECOVERY_ROOT_OUT) --first-call
++BOARD_RECOVERY_IMAGE_PREPARE = RODIN_FIRMWARE_VARIANT=$(RODIN_FIRMWARE_VARIANT) bash $(DEVICE_PATH)/fox_callback.sh $(TARGET_RECOVERY_ROOT_OUT) --first-call
+ 
+ AB_OTA_UPDATER := true
+ # The retained stock MediaTek service is AIDL. This also makes OrangeFox's
 diff --git a/README.md b/README.md
-index d7f130d..206fa2c 100644
+index d7f130d..b2456b5 100644
 --- a/README.md
 +++ b/README.md
 @@ -34,14 +34,54 @@ device's validated 60 MB combined-ramdisk limit. The Mount menu's "USB
@@ -82,11 +86,11 @@ index d7f130d..206fa2c 100644
 +
 +The Global OS3.0.301.0.WOJMIXM image is built from its own platform ramdisk.
 +Its stock DTB is byte-identical to the CN baseline, while its modules use the
-+6.6.89 ABI rather than CN's 6.6.77. The callback replaces the seven
-+Recovery-only touch, haptic, and eSE modules with the matching Global inputs
-+and applies their checked SCP/Goodix/FocalTech patch. The repacker also fails
-+unless Global's Type-C/OTG stack exposes `vbus_switch`; do not flash the CN
-+image on Global firmware.
++6.6.89 ABI rather than CN's 6.6.77. Before Make assembles the recovery root,
++the build creates a patched seven-module Global source directory and directs
++`PRODUCT_COPY_FILES` to it. This makes the module set independent of callback
++ordering. The repacker also fails unless Global's Type-C/OTG stack exposes
++`vbus_switch`; do not flash the CN image on Global firmware.
 +
 +The stock DTB additionally makes the xHCI node depend on Android's USB audio
 +offload service. Recovery deliberately does not load that audio/modem stack;
@@ -118,6 +122,124 @@ index d7f130d..206fa2c 100644
  ```
  
  The expected mount point is `/usb_otg`. Test FAT and exFAT media. A drive that
+diff --git a/build-lowmem.sh b/build-lowmem.sh
+index fdd2932..6840863 100755
+--- a/build-lowmem.sh
++++ b/build-lowmem.sh
+@@ -29,6 +29,7 @@ export FOX_BUILD_DEVICE="${FOX_BUILD_DEVICE:-rodin}"
+ export FOX_AB_DEVICE="${FOX_AB_DEVICE:-1}"
+ export FOX_VIRTUAL_AB_DEVICE="${FOX_VIRTUAL_AB_DEVICE:-1}"
+ export OF_FORCE_PREBUILT_KERNEL="${OF_FORCE_PREBUILT_KERNEL:-1}"
++export RODIN_FIRMWARE_VARIANT="${RODIN_FIRMWARE_VARIANT:-cn}"
+ export NINJA_ARGS="${NINJA_ARGS:--j${OF_BUILD_JOBS} -l${OF_BUILD_JOBS}}"
+ export SOONG_UI_NINJA_ARGS="${SOONG_UI_NINJA_ARGS:--j${OF_BUILD_JOBS} -l${OF_BUILD_JOBS}}"
+ export NINJA_HIGHMEM_NUM_JOBS="${NINJA_HIGHMEM_NUM_JOBS:-1}"
+@@ -73,6 +74,45 @@ fi
+ LOG_FILE="${LOG_DIR}/rodin-lowmem-$(date +%Y%m%d-%H%M%S).log"
+ 
+ cd "${TOP_DIR}"
++prepare_global_recovery_modules() {
++    local module_dir module
++
++    case "${RODIN_FIRMWARE_VARIANT}" in
++        cn)
++            unset RODIN_GLOBAL_RECOVERY_MODULE_DIR
++            return
++            ;;
++        global)
++            ;;
++        *)
++            echo "unsupported RODIN_FIRMWARE_VARIANT: ${RODIN_FIRMWARE_VARIANT}" >&2
++            exit 1
++            ;;
++    esac
++
++    # PRODUCT_COPY_FILES can run after BOARD_RECOVERY_IMAGE_PREPARE. Prepare
++    # Global's patched ABI-specific modules before Make assembles the root so
++    # either ordering produces the same final recovery fragment.
++    module_dir="${OUT_DIR}/target/product/rodin/rodin-global-recovery-modules"
++    install -d "${module_dir}"
++    for module in \
++        focaltech_touch_rodin.ko \
++        goodix_core_rodin.ko \
++        nxp_i2c.ko \
++        p73.ko \
++        scp.ko \
++        si_haptic.ko \
++        xiaomi_touch_rodin.ko; do
++        cp -fp "${DEVICE_DIR}/prebuilt/global/modules/${module}" "${module_dir}/${module}"
++    done
++    RODIN_FIRMWARE_VARIANT=global \
++        "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" "${module_dir}"
++    export RODIN_GLOBAL_RECOVERY_MODULE_DIR="${module_dir}"
++    echo "using prepared Global recovery modules: ${RODIN_GLOBAL_RECOVERY_MODULE_DIR}"
++}
++
++prepare_global_recovery_modules
++
+ set +u
+ source build/envsetup.sh
+ lunch twrp_rodin-ap2a-eng
+@@ -88,8 +128,13 @@ fi
+ echo "log: ${LOG_FILE}"
+ echo "targets: ${TARGETS[*]}"
+ 
++mka_profile_args=("RODIN_FIRMWARE_VARIANT=${RODIN_FIRMWARE_VARIANT}")
++if [ "${RODIN_FIRMWARE_VARIANT}" = "global" ]; then
++    mka_profile_args+=("RODIN_GLOBAL_RECOVERY_MODULE_DIR=${RODIN_GLOBAL_RECOVERY_MODULE_DIR}")
++fi
++
+ set +e
+-mka -j"${OF_BUILD_JOBS}" "${TARGETS[@]}" 2>&1 | tee "${LOG_FILE}"
++mka -j"${OF_BUILD_JOBS}" "${mka_profile_args[@]}" "${TARGETS[@]}" 2>&1 | tee "${LOG_FILE}"
+ status=${PIPESTATUS[0]}
+ set -e
+ 
+diff --git a/device.mk b/device.mk
+index 9eb2642..4dc5c7d 100644
+--- a/device.mk
++++ b/device.mk
+@@ -62,6 +62,21 @@ PRODUCT_PACKAGES_DEBUG += \
+     bootctl \
+     logcat
+ 
++RODIN_RECOVERY_MODULE_DIR := $(DEVICE_PATH)/recovery/root/lib/modules
++RODIN_RECOVERY_HAPTIC_MODULE := $(DEVICE_PATH)/proprietary/haptics/si_haptic.ko
++RODIN_RECOVERY_EXTRA_MODULE_COPY_FILES :=
++
++ifeq ($(RODIN_FIRMWARE_VARIANT),global)
++ifeq ($(strip $(RODIN_GLOBAL_RECOVERY_MODULE_DIR)),)
++$(error RODIN_GLOBAL_RECOVERY_MODULE_DIR is required for the Global firmware profile)
++endif
++RODIN_RECOVERY_MODULE_DIR := $(RODIN_GLOBAL_RECOVERY_MODULE_DIR)
++RODIN_RECOVERY_HAPTIC_MODULE := $(RODIN_GLOBAL_RECOVERY_MODULE_DIR)/si_haptic.ko
++RODIN_RECOVERY_EXTRA_MODULE_COPY_FILES := \
++    $(RODIN_GLOBAL_RECOVERY_MODULE_DIR)/nxp_i2c.ko:recovery/root/lib/modules/nxp_i2c.ko \
++    $(RODIN_GLOBAL_RECOVERY_MODULE_DIR)/p73.ko:recovery/root/lib/modules/p73.ko
++endif
++
+ PRODUCT_COPY_FILES += \
+     $(DEVICE_PATH)/recovery/root/init.recovery.bootctl.rc:recovery/root/init.recovery.bootctl.rc \
+     $(DEVICE_PATH)/recovery/root/init.recovery.hardware.rc:recovery/root/init.recovery.hardware.rc \
+@@ -72,12 +87,13 @@ PRODUCT_COPY_FILES += \
+     $(DEVICE_PATH)/recovery/root/system/bin/wait-touch-service.sh:recovery/root/system/bin/wait-touch-service.sh \
+     $(DEVICE_PATH)/recovery/root/system/bin/load-haptics-module.sh:recovery/root/system/bin/load-haptics-module.sh \
+     $(DEVICE_PATH)/proprietary/fonts/MiSans.ttf:recovery/root/twres/fonts/MiSans.ttf \
+-    $(DEVICE_PATH)/proprietary/haptics/si_haptic.ko:recovery/root/lib/modules/si_haptic.ko \
++    $(RODIN_RECOVERY_HAPTIC_MODULE):recovery/root/lib/modules/si_haptic.ko \
+     $(DEVICE_PATH)/proprietary/haptics/firmware/aw8697_haptic.bin:recovery/root/vendor/firmware/aw8697_haptic.bin \
+-    $(DEVICE_PATH)/recovery/root/lib/modules/scp.ko:recovery/root/lib/modules/scp.ko \
+-    $(DEVICE_PATH)/recovery/root/lib/modules/xiaomi_touch_rodin.ko:recovery/root/lib/modules/xiaomi_touch_rodin.ko \
+-    $(DEVICE_PATH)/recovery/root/lib/modules/goodix_core_rodin.ko:recovery/root/lib/modules/goodix_core_rodin.ko \
+-    $(DEVICE_PATH)/recovery/root/lib/modules/focaltech_touch_rodin.ko:recovery/root/lib/modules/focaltech_touch_rodin.ko \
++    $(RODIN_RECOVERY_MODULE_DIR)/scp.ko:recovery/root/lib/modules/scp.ko \
++    $(RODIN_RECOVERY_MODULE_DIR)/xiaomi_touch_rodin.ko:recovery/root/lib/modules/xiaomi_touch_rodin.ko \
++    $(RODIN_RECOVERY_MODULE_DIR)/goodix_core_rodin.ko:recovery/root/lib/modules/goodix_core_rodin.ko \
++    $(RODIN_RECOVERY_MODULE_DIR)/focaltech_touch_rodin.ko:recovery/root/lib/modules/focaltech_touch_rodin.ko \
++    $(RODIN_RECOVERY_EXTRA_MODULE_COPY_FILES) \
+     $(DEVICE_PATH)/proprietary/odm/bin/hw/vendor.xiaomi.hw.touchfeature-service-recovery:recovery/root/system/bin/vendor.xiaomi.hw.touchfeature-service-recovery \
+     $(DEVICE_PATH)/proprietary/odm/lib64/libtouchreport.so:recovery/root/system/lib64/rodin-touch/libtouchreport.so \
+     $(DEVICE_PATH)/proprietary/odm/lib64/libtouchreport_alg_goodix.so:recovery/root/system/lib64/rodin-touch/libtouchreport_alg_goodix.so \
 diff --git a/docs/BLOBS_AND_PORTING_CN.md b/docs/BLOBS_AND_PORTING_CN.md
 index 2f227ef..4b54819 100644
 --- a/docs/BLOBS_AND_PORTING_CN.md
@@ -137,7 +259,7 @@ index 2f227ef..4b54819 100644
  不能直接加载原始 `scp.ko`。实机 pstore 已确认它会在缺少 SCP reserved-memory 的 Recovery 环境中于 `scp_region_info_init()` 触发 kernel panic。
  
 diff --git a/docs/BUILD_FROM_SOURCE_CN.md b/docs/BUILD_FROM_SOURCE_CN.md
-index 9613a69..5d03f59 100644
+index 9613a69..ae9b8d6 100644
 --- a/docs/BUILD_FROM_SOURCE_CN.md
 +++ b/docs/BUILD_FROM_SOURCE_CN.md
 @@ -85,10 +85,9 @@ rodin 在删除 `.repo` 后，源码与完整 `out/` 的构建峰值仍约为 83
@@ -154,7 +276,7 @@ index 9613a69..5d03f59 100644
  
  只有 `main` 上成功的构建会创建 prerelease。其他 ref 的手动构建仍会上传
  artifact，但不会向仓库发布 release。
-@@ -145,6 +144,22 @@ recovery patch 包含：
+@@ -145,6 +144,23 @@ recovery patch 包含：
  - rodin 解密后禁止完整 GUI package 重建，避免 recovery `SIGSEGV`。
  - 解密页面显示前加载默认简体中文。
  - MiSans 主题选择项和 SIH6887 震动节点支持。
@@ -165,7 +287,8 @@ index 9613a69..5d03f59 100644
 +  OTG 介质，且 host 期间不会读取会阻塞的 role-switch `role` 属性。
 +- Global OS3.0.301.0.WOJMIXM 必须设置 `RODIN_FIRMWARE_VARIANT=global`。它使用自己的
 +  6.6.89 platform ramdisk；最终打包还会替换 7 个 ABI 相关的触摸、haptic 和 eSE 模块，
-+  并应用 Global 固定偏移的 SCP/Goodix/FocalTech Recovery patch。repacker 会验证其中的
++  并在 Make 复制 `recovery/root` 前生成已修补的模块源目录，避免产品复制顺序覆盖 Global
++  模块。该目录应用 Global 固定偏移的 SCP/Goodix/FocalTech Recovery patch。repacker 会验证其中的
 +  Type-C/OTG 模块及 `vbus_switch`，并将最终 Recovery 的 7 个模块逐字节比对为已修补的
 +  Global 输入，防止 CN recovery fragment 被误用；DTB 与 CN 基线完全相同，仍会移除 xHCI 的
 +  `mediatek,usb-offload` 属性。
@@ -1110,7 +1233,7 @@ index 0000000..9228378
 +if __name__ == "__main__":
 +    raise SystemExit(main())
 diff --git a/tools/verify-build-inputs.sh b/tools/verify-build-inputs.sh
-index 1f960e1..0f61e61 100755
+index 1f960e1..28591ab 100755
 --- a/tools/verify-build-inputs.sh
 +++ b/tools/verify-build-inputs.sh
 @@ -15,7 +15,7 @@ case "${RODIN_FIRMWARE_VARIANT:-cn}" in
@@ -1161,20 +1284,29 @@ index 1f960e1..0f61e61 100755
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/scp.ko" ebae9554467e148256cfbab90f0b6d7943d2818ae0cf09bad8aec650bbd99310
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/goodix_core_rodin.ko" 3c2fe7db061743134b715e5a7c361690c3fa36cfacb9c15c1e0bb122e51ac966
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/focaltech_touch_rodin.ko" da967ce3f94ecc81153ee91f7e06a2b48eda0526b857688016ef660844bc70b2
-@@ -140,6 +158,12 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
+@@ -140,6 +158,21 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
  check_contains "${DEVICE_DIR}/fox_callback.sh" \
      'focaltech_touch_rodin.ko|goodix_core_rodin.ko' \
      "FocalTech module is not retained in the final ramdisk"
 +check_contains "${DEVICE_DIR}/fox_callback.sh" \
 +    'prebuilt/global/modules' \
 +    "Global module replacement is not configured"
++check_contains "${DEVICE_DIR}/build-lowmem.sh" \
++    'prepare_global_recovery_modules' \
++    "Global modules are not prepared before the Make build"
++check_contains "${DEVICE_DIR}/device.mk" \
++    'RODIN_GLOBAL_RECOVERY_MODULE_DIR' \
++    "Global module PRODUCT_COPY_FILES source is not configured"
++check_contains "${DEVICE_DIR}/BoardConfig.mk" \
++    'RODIN_FIRMWARE_VARIANT=$(RODIN_FIRMWARE_VARIANT)' \
++    "Recovery callback does not receive the selected firmware profile"
 +check_contains "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
 +    'GLOBAL_SCP_STOCK_SHA256' \
 +    "Global touch patch hashes are missing"
  check_contains "${DEVICE_DIR}/Android.bp" \
      'name: "rodin_android.hardware.secure_element-V1-ndk"' \
      "Recovery secure-element prebuilt module is missing"
-@@ -194,6 +218,24 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+@@ -194,6 +227,24 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
  check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
      'verify_image --image "$disable_avb_verify_image"' \
      "disable-avb vendor_boot AVB footer is not verified"
@@ -1199,7 +1331,7 @@ index 1f960e1..0f61e61 100755
  check_contains "${DEVICE_DIR}/BoardConfig.mk" \
      'OF_USE_AIDL_BOOT_CONTROL := 1' \
      "OrangeFox is not configured to use AIDL BootControl"
-@@ -248,6 +290,12 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
+@@ -248,6 +299,12 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
          fail "Python syntax check failed: tools/verify-source-manifest.py"
  fi
  
@@ -1212,7 +1344,7 @@ index 1f960e1..0f61e61 100755
  if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
      for marker in \
          OF_SKIP_POST_DECRYPT_THEME_RELOAD \
-@@ -255,6 +303,9 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
+@@ -255,6 +312,9 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
          fallback_face \
          processKeyChord \
          Resolve_UsbOtg_Block_Device \

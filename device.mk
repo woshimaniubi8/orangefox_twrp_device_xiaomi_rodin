@@ -62,6 +62,21 @@ PRODUCT_PACKAGES_DEBUG += \
     bootctl \
     logcat
 
+RODIN_RECOVERY_MODULE_DIR := $(DEVICE_PATH)/recovery/root/lib/modules
+RODIN_RECOVERY_HAPTIC_MODULE := $(DEVICE_PATH)/proprietary/haptics/si_haptic.ko
+RODIN_RECOVERY_EXTRA_MODULE_COPY_FILES :=
+
+ifeq ($(RODIN_FIRMWARE_VARIANT),global)
+ifeq ($(strip $(RODIN_GLOBAL_RECOVERY_MODULE_DIR)),)
+$(error RODIN_GLOBAL_RECOVERY_MODULE_DIR is required for the Global firmware profile)
+endif
+RODIN_RECOVERY_MODULE_DIR := $(RODIN_GLOBAL_RECOVERY_MODULE_DIR)
+RODIN_RECOVERY_HAPTIC_MODULE := $(RODIN_GLOBAL_RECOVERY_MODULE_DIR)/si_haptic.ko
+RODIN_RECOVERY_EXTRA_MODULE_COPY_FILES := \
+    $(RODIN_GLOBAL_RECOVERY_MODULE_DIR)/nxp_i2c.ko:recovery/root/lib/modules/nxp_i2c.ko \
+    $(RODIN_GLOBAL_RECOVERY_MODULE_DIR)/p73.ko:recovery/root/lib/modules/p73.ko
+endif
+
 PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/recovery/root/init.recovery.bootctl.rc:recovery/root/init.recovery.bootctl.rc \
     $(DEVICE_PATH)/recovery/root/init.recovery.hardware.rc:recovery/root/init.recovery.hardware.rc \
@@ -72,12 +87,13 @@ PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/recovery/root/system/bin/wait-touch-service.sh:recovery/root/system/bin/wait-touch-service.sh \
     $(DEVICE_PATH)/recovery/root/system/bin/load-haptics-module.sh:recovery/root/system/bin/load-haptics-module.sh \
     $(DEVICE_PATH)/proprietary/fonts/MiSans.ttf:recovery/root/twres/fonts/MiSans.ttf \
-    $(DEVICE_PATH)/proprietary/haptics/si_haptic.ko:recovery/root/lib/modules/si_haptic.ko \
+    $(RODIN_RECOVERY_HAPTIC_MODULE):recovery/root/lib/modules/si_haptic.ko \
     $(DEVICE_PATH)/proprietary/haptics/firmware/aw8697_haptic.bin:recovery/root/vendor/firmware/aw8697_haptic.bin \
-    $(DEVICE_PATH)/recovery/root/lib/modules/scp.ko:recovery/root/lib/modules/scp.ko \
-    $(DEVICE_PATH)/recovery/root/lib/modules/xiaomi_touch_rodin.ko:recovery/root/lib/modules/xiaomi_touch_rodin.ko \
-    $(DEVICE_PATH)/recovery/root/lib/modules/goodix_core_rodin.ko:recovery/root/lib/modules/goodix_core_rodin.ko \
-    $(DEVICE_PATH)/recovery/root/lib/modules/focaltech_touch_rodin.ko:recovery/root/lib/modules/focaltech_touch_rodin.ko \
+    $(RODIN_RECOVERY_MODULE_DIR)/scp.ko:recovery/root/lib/modules/scp.ko \
+    $(RODIN_RECOVERY_MODULE_DIR)/xiaomi_touch_rodin.ko:recovery/root/lib/modules/xiaomi_touch_rodin.ko \
+    $(RODIN_RECOVERY_MODULE_DIR)/goodix_core_rodin.ko:recovery/root/lib/modules/goodix_core_rodin.ko \
+    $(RODIN_RECOVERY_MODULE_DIR)/focaltech_touch_rodin.ko:recovery/root/lib/modules/focaltech_touch_rodin.ko \
+    $(RODIN_RECOVERY_EXTRA_MODULE_COPY_FILES) \
     $(DEVICE_PATH)/proprietary/odm/bin/hw/vendor.xiaomi.hw.touchfeature-service-recovery:recovery/root/system/bin/vendor.xiaomi.hw.touchfeature-service-recovery \
     $(DEVICE_PATH)/proprietary/odm/lib64/libtouchreport.so:recovery/root/system/lib64/rodin-touch/libtouchreport.so \
     $(DEVICE_PATH)/proprietary/odm/lib64/libtouchreport_alg_goodix.so:recovery/root/system/lib64/rodin-touch/libtouchreport_alg_goodix.so \
