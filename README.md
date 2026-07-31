@@ -58,12 +58,13 @@ ordering. The repacker also fails unless Global's Type-C/OTG stack exposes
 `vbus_switch`; do not flash the CN image on Global firmware. Global's DRM
 profile retains the normal `blanktimer -> gr_fb_blank()` state machine and does
 not define `TW_NO_SCREEN_BLANK`. After the initial full atomic setup, its
-screen-off and screen-on commits change only the CRTC `ACTIVE` property; the
-connector, mode, and plane bindings remain configured. This avoids the
-stock-Global panel restore failure caused by tearing down and rebuilding that
-pipeline on every lock while retaining real DRM blanking. Recovery exit still
-performs one complete atomic teardown before releasing its mode and framebuffer
-objects.
+screen-off commit changes only the CRTC `ACTIVE` property, retaining the
+connector, mode, and plane bindings. The screen-on commit then re-submits the
+complete mode, connector, and plane state without first detaching that
+pipeline, so the MTK driver receives its panel resume path while avoiding the
+stock-Global restore failure caused by a full teardown/rebuild on every lock.
+Recovery exit still performs one complete atomic teardown before releasing its
+mode and framebuffer objects.
 
 The stock DTB additionally makes the xHCI node depend on Android's USB audio
 offload service. Recovery deliberately does not load that audio/modem stack;

@@ -166,8 +166,9 @@ recovery patch 包含：
   Type-C/OTG 模块及 `vbus_switch`，并将最终 Recovery 的 7 个模块逐字节比对为已修补的
   Global 输入，防止 CN recovery fragment 被误用；DTB 与 CN 基线完全相同，仍会移除 xHCI 的
   `mediatek,usb-offload` 属性。Global 保留原始的 `blanktimer -> gr_fb_blank()` 锁屏状态机，
-  但首次完整配置 atomic DRM pipeline 后，后续锁屏和唤醒只切换 CRTC `ACTIVE=0/1`，保留
-  connector、mode 和 plane 绑定，避免 stock 6.6.89 在完整 teardown/rebuild 后无法恢复面板。
+  但首次完整配置 atomic DRM pipeline 后，后续锁屏只切换 CRTC `ACTIVE=0` 并保留 connector、
+  mode 和 plane 绑定；唤醒时重新提交完整 mode/connector/plane 状态，触发 MTK 面板恢复，同时
+  避免 stock 6.6.89 在完整 teardown/rebuild 后无法恢复面板。
   仅 Recovery 退出时才完整拆除这些绑定，再释放 mode blob 和 framebuffer；
   `TW_NO_SCREEN_BLANK` 仍不得定义。
 - stock DTB 的 xHCI 节点依赖 Android USB audio offload；Recovery 不加载其音频/基带依赖。

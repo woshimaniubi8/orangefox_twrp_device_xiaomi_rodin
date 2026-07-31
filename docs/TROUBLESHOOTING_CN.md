@@ -138,19 +138,20 @@ adb shell 'file /twres/fonts/MiSans.ttf'
 ## 10. Global 锁屏后屏幕仍亮或无法唤醒
 
 Global 仍使用标准的 `blanktimer -> gr_fb_blank() -> atomic DRM` 链路，不使用亮度归零
-workaround。它只在完成首次完整 atomic setup 后，将后续锁屏/唤醒提交缩小为 CRTC
-`ACTIVE=0/1`，保留 connector、mode 和 plane binding；这修复的是 Global stock 6.6.89 的
-完整 teardown/rebuild 后无法恢复面板的问题，而非绕开锁屏链路。
+workaround。它只在完成首次完整 atomic setup 后，让锁屏提交 CRTC `ACTIVE=0` 并保留
+connector、mode 和 plane binding；唤醒时重新提交完整 mode/connector/plane 状态，使 MTK
+驱动执行面板恢复链路。这修复的是 Global stock 6.6.89 的完整 teardown/rebuild 后无法恢复
+面板的问题，而非绕开锁屏链路。
 Recovery 退出时则会先完整 teardown，再释放 mode blob 和 framebuffer，避免仍被 DRM 状态
 引用的资源被提前释放。
 
 不要定义 `TW_NO_SCREEN_BLANK`：它会跳过 CRTC blank，并移除“屏幕关闭时普通输入不应唤醒”的
 保护，导致日志中出现 `brightness=0` 后立即恢复 `brightness=1000`，表现为已锁屏但屏幕仍亮。
 
-先在与镜像匹配的 stock 固件上测试。`6.6.139-EVONIX-COS-V3.0` 等第三方内核不能用于判断
-Global `6.6.89` 输入的显示兼容性。新的 Recovery 会在真实 atomic commit 处记录请求方向、
-connector/CRTC/plane 标识及返回值；锁屏和唤醒各应出现一行
-`DRM blank retained pipeline: ACTIVE=0` 或 `ACTIVE=1`，随后为成功 commit。若 stock Global
+新的 Recovery 会在真实 atomic commit 处记录请求方向、connector/CRTC/plane 标识及返回值；
+锁屏和唤醒各应出现一行
+`DRM blank retained pipeline: ACTIVE=0`，随后是
+`DRM blank restore retained pipeline: full setup` 和成功 commit。若 stock Global
 仍无法唤醒，保留这组日志再修正 atomic 属性，不能重新启用亮度替代路径。
 
 从 ADB 进行一次可重复验证，再用物理电源键重复一次：

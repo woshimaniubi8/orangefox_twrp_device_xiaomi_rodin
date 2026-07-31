@@ -468,7 +468,7 @@ index 8e22b640..97a85fd9 100644
  
  void gr_clip(int x, int y, int w, int h)
 diff --git a/minuitwrp/graphics_drm.cpp b/minuitwrp/graphics_drm.cpp
-index 0cc80f5c..95ae274a 100644
+index 0cc80f5c..fe8d3f2d 100644
 --- a/minuitwrp/graphics_drm.cpp
 +++ b/minuitwrp/graphics_drm.cpp
 @@ -232,6 +232,9 @@ static drmModeConnector *main_monitor_connector;
@@ -481,7 +481,25 @@ index 0cc80f5c..95ae274a 100644
  static int fb_prop_id;
  static struct Crtc crtc_res;
  static struct Connector conn_res;
-@@ -554,7 +557,68 @@ static int teardown_pipeline(drmModeAtomicReqPtr atomic_req) {
+@@ -457,7 +460,7 @@ static int SetupSprBlob(int fd, const std::string& prop_name, uint32_t* blob_id)
+   return ret;
+ }
+ 
+-static int atomic_populate_plane(int plane, drmModeAtomicReqPtr atomic_req) {
++static int atomic_populate_plane(int plane, drmModeAtomicReqPtr atomic_req, int buffer) {
+   uint32_t src_x, src_y, src_w, src_h;
+   uint32_t crtc_x, crtc_y, crtc_w, crtc_h;
+   int width = main_monitor_crtc->mode.hdisplay;
+@@ -482,7 +485,7 @@ static int atomic_populate_plane(int plane, drmModeAtomicReqPtr atomic_req) {
+ 
+   if (atomic_add_prop_to_plane(plane_res, atomic_req,
+                                plane_res[plane].plane->plane_id, "FB_ID",
+-                               drm_surfaces[current_buffer]->fb_id))
++                               drm_surfaces[buffer]->fb_id))
+     return -EINVAL;
+ 
+   if (atomic_add_prop_to_plane(plane_res, atomic_req,
+@@ -554,11 +557,72 @@ static int teardown_pipeline(drmModeAtomicReqPtr atomic_req) {
    return 0;
  }
  
@@ -550,19 +568,40 @@ index 0cc80f5c..95ae274a 100644
    return teardown_pipeline(atomic_req);
  }
  
-@@ -586,14 +650,38 @@ static int setup_pipeline(drmModeAtomicReqPtr atomic_req) {
+-static int setup_pipeline(drmModeAtomicReqPtr atomic_req) {
++static int setup_pipeline(drmModeAtomicReqPtr atomic_req, int buffer) {
+   uint32_t i, prop_id;
+   int ret;
+ 
+@@ -575,7 +639,7 @@ static int setup_pipeline(drmModeAtomicReqPtr atomic_req) {
+ 
+   /* Setup planes */
+   for(i = 0; i < number_of_lms; i++) {
+-    ret = atomic_populate_plane(i, atomic_req);
++    ret = atomic_populate_plane(i, atomic_req, buffer);
+     if (ret < 0) {
+       printf("Error populating plane_id = %d\n", plane_res[i].plane->plane_id);
+       return ret;
+@@ -586,14 +650,44 @@ static int setup_pipeline(drmModeAtomicReqPtr atomic_req) {
  
  }
  static int drm_enable_crtc(drmModeAtomicReqPtr atomic_req) {
+-  return setup_pipeline(atomic_req);
++  int buffer = current_buffer;
 +#ifdef TW_DRM_BLANK_KEEP_PIPELINE
 +  if (drm_pipeline_configured) {
-+    printf("DRM blank retained pipeline: ACTIVE=1\n");
-+    return set_crtc_active(atomic_req, 1);
++    // ACTIVE=1 alone can return success while the MTK panel remains powered
++    // down. Re-submit mode, connector, and plane state without first
++    // detaching the retained pipeline so the driver's resume path runs.
++    // current_buffer points to the next back buffer after drm_flip(); use the
++    // buffer that was actually displayed before the blank request.
++    buffer = 1 - current_buffer;
++    printf("DRM blank restore retained pipeline: full setup\n");
 +  }
 +#endif
-   return setup_pipeline(atomic_req);
- }
- 
++  return setup_pipeline(atomic_req, buffer);
++}
++
 +static void log_drm_blank_request(bool blank) {
 +  const uint32_t crtc_id = main_monitor_crtc ? main_monitor_crtc->crtc_id : 0;
 +  const uint32_t connector_id = main_monitor_connector ? main_monitor_connector->connector_id : 0;
@@ -574,8 +613,8 @@ index 0cc80f5c..95ae274a 100644
 +    const uint32_t plane_id = plane_res[i].plane ? plane_res[i].plane->plane_id : 0;
 +    printf("DRM blank plane[%u]=%u\n", i, plane_id);
 +  }
-+}
-+
+ }
+ 
  static void drm_blank(minui_backend* backend __unused, bool blank) {
    int ret = 0;
 +  bool commit_attempted = false;
@@ -590,7 +629,7 @@ index 0cc80f5c..95ae274a 100644
  
    drmModeAtomicReqPtr atomic_req = drmModeAtomicAlloc();
    if (!atomic_req) {
-@@ -606,14 +694,27 @@ static void drm_blank(minui_backend* backend __unused, bool blank) {
+@@ -606,14 +700,27 @@ static void drm_blank(minui_backend* backend __unused, bool blank) {
    else
      ret = drm_enable_crtc(atomic_req);
  
@@ -622,7 +661,7 @@ index 0cc80f5c..95ae274a 100644
    }
  
    drmModeAtomicFree(atomic_req);
-@@ -934,6 +1035,10 @@ static void update_plane_fb() {
+@@ -934,6 +1041,10 @@ static void update_plane_fb() {
  static GRSurface* drm_init(minui_backend* backend __unused) {
    drmModeRes* res = nullptr;
  
@@ -633,7 +672,7 @@ index 0cc80f5c..95ae274a 100644
    spr_enabled = android::base::GetIntProperty("vendor.display.enable_spr", 0);
    /* Consider DRM devices in order. */
    for (int i = 0; i < DRM_MAX_MINOR; i++) {
-@@ -1155,7 +1260,14 @@ static GRSurface* drm_flip(minui_backend* backend __unused) {
+@@ -1155,7 +1266,14 @@ static GRSurface* drm_flip(minui_backend* backend __unused) {
  }
  
  static void drm_exit(minui_backend* backend __unused) {
