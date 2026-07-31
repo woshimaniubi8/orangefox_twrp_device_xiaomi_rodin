@@ -56,10 +56,14 @@ the build creates a patched seven-module Global source directory and directs
 `PRODUCT_COPY_FILES` to it. This makes the module set independent of callback
 ordering. The repacker also fails unless Global's Type-C/OTG stack exposes
 `vbus_switch`; do not flash the CN image on Global firmware. Global's DRM
-driver does not reliably restore an atomic CRTC after a Recovery screen blank,
-so that profile retains the lock and timeout UI but blanks by setting the
-working panel backlight to zero rather than disabling the CRTC. CN retains its
-normal DRM blank path.
+profile retains the normal `blanktimer -> gr_fb_blank()` state machine and does
+not define `TW_NO_SCREEN_BLANK`. After the initial full atomic setup, its
+screen-off and screen-on commits change only the CRTC `ACTIVE` property; the
+connector, mode, and plane bindings remain configured. This avoids the
+stock-Global panel restore failure caused by tearing down and rebuilding that
+pipeline on every lock while retaining real DRM blanking. Recovery exit still
+performs one complete atomic teardown before releasing its mode and framebuffer
+objects.
 
 The stock DTB additionally makes the xHCI node depend on Android's USB audio
 offload service. Recovery deliberately does not load that audio/modem stack;

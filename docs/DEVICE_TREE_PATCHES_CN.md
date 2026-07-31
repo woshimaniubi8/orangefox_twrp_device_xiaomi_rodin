@@ -10,9 +10,11 @@
 - `recovery/root/init.recovery.keymint.rc`：为 OMAPI bridge 设置 vendor/system 运行时库搜索路径和 libc++ compatibility preload；在 `tee-supplicant` 就绪后并行启动 KeyMint、secure-element 与 NXP Weaver，不再以 bridge ready 属性阻塞 Weaver。
 - `BoardConfig.mk`、`recovery/root/init.recovery.bootctl.rc` 与 post-build repacker：OrangeFox 和 ROM updater 均使用 stock MediaTek AIDL BootControl；重打包器保留 binary，并将其 device VINTF fragment 放到 `/vendor/etc/vintf/manifest`，避免 `/system` framework VINTF 解析失败而使 Keystore2 崩溃。recovery rc 通过 compatibility shim 启动该服务，避免旧 HIDL fallback 的 UFS boot-region ioctl 使 slot 切换失败。
 - `tools/build-system-compatible-vendor-boot.sh`：增加 `RODIN_FIRMWARE_VARIANT=cn|global`，使最终镜像保留与目标系统相匹配的 type-1 platform ramdisk。
-- `BoardConfig.mk`：Global profile 启用 `TW_NO_SCREEN_BLANK`。其 6.6.89 MTK DRM 在
-  Recovery 的 atomic CRTC disable/enable 后可能保持黑屏，而 `panel1-backlight/brightness`
-  已实测可读写；该开关保留锁屏与超时，仅以亮度归零和恢复代替 DRM CRTC blank。CN 保持原行为。
+- `BoardConfig.mk`、`patches/orangefox-vendor-twrp.patch` 与共享 Recovery patch：CN 保持原有
+  atomic DRM 的完整 teardown/rebuild；Global 保留相同的 blanktimer/锁屏状态机，但首次完整 setup
+  后只对 CRTC 提交 `ACTIVE=0/1`，不撤销 connector、mode 或 plane binding。该编译开关经
+  `vendor/twrp` Soong 显式传给 `libminuitwrp`；仅在 Recovery 退出时完整 teardown 后释放
+  mode/FB 资源，`TW_NO_SCREEN_BLANK` 仍禁止使用。
 - `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，先拉取 Git LFS blob，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。
 - 构建前检查、文件哈希清单和构建文档。
 
@@ -85,7 +87,7 @@ patch -d device/xiaomi/rodin -p1 < "$PATCH"
 device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
 ```
 
-该脚本继续负责 `build/make` 和 `bootable/recovery` 的两个 Git patch；`rodin-fbe-global.patch` 只修改设备树，不能由该脚本对非 Git 设备目录自动应用。
+该脚本继续负责 `build/make`、`vendor/twrp` 和 `bootable/recovery` 的三个 Git patch；`rodin-fbe-global.patch` 只修改设备树，不能由该脚本对非 Git 设备目录自动应用。
 
 ## Global 固件输入
 

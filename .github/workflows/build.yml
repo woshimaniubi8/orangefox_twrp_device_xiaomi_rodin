@@ -312,11 +312,6 @@ jobs:
             git -C "$ORANGEFOX_TOP/system/vold" apply "$vold_patch"
           fi
 
-          boardconfig="$ORANGEFOX_TOP/vendor/twrp/config/BoardConfigSoong.mk"
-          grep -qx 'include bootable/recovery/orangefox_soong.mk' "$boardconfig" || \
-            sed -i '/SOONG_CONFIG_NAMESPACES += twrpVarsPlugin/i include bootable/recovery/orangefox_soong.mk' \
-              "$boardconfig"
-
       - name: Install rodin device tree
         shell: bash
         run: |

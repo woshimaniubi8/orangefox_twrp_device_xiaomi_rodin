@@ -1,46 +1,231 @@
-diff --git a/.gitattributes b/.gitattributes
-index 357d6e8..cbc485f 100644
---- a/.gitattributes
+diff --git a/desired/.gitattributes b/.gitattributes
+new file mode 100644
+index 0000000..cbc485f
+--- /dev/null
 +++ b/.gitattributes
-@@ -1,2 +1,3 @@
- *.img filter=lfs diff=lfs merge=lfs -text
- prebuilt/* filter=lfs diff=lfs merge=lfs -text
+@@ -0,0 +1,3 @@
++*.img filter=lfs diff=lfs merge=lfs -text
++prebuilt/* filter=lfs diff=lfs merge=lfs -text
 +prebuilt/global/modules/*.ko filter=lfs diff=lfs merge=lfs -text
+diff --git a/desired/.github/scripts/reclaim-github-hosted-space.sh b/.github/scripts/reclaim-github-hosted-space.sh
+new file mode 100644
+index 0000000..4d00278
+--- /dev/null
++++ b/.github/scripts/reclaim-github-hosted-space.sh
+@@ -0,0 +1,43 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# This job runs on an ephemeral GitHub-hosted image. None of these SDKs or
++# language toolchains are used by the OrangeFox build; removing them makes the
++# root filesystem large enough to hold the source tree after .repo is dropped.
++if ! sudo -n true; then
++  echo "Passwordless sudo is required on a GitHub-hosted runner." >&2
++  exit 1
++fi
++
++tool_cache="${RUNNER_TOOL_CACHE:-${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}}"
++unused_paths=(
++  /usr/local/lib/android
++  /usr/share/dotnet
++  /opt/ghc
++  /usr/local/.ghcup
++  /usr/local/rustup
++  /usr/local/cargo
++  /usr/share/swift
++  /opt/google
++  /opt/microsoft
++  /usr/local/share/chromium
++  /usr/local/share/boost
++  "${tool_cache}"
++)
++
++echo "Filesystem before reclaim:"
++df -h "${GITHUB_WORKSPACE:-$PWD}"
++
++printf 'Removing unused hosted-image paths:\n'
++printf '  %s\n' "${unused_paths[@]}"
++sudo rm -rf -- "${unused_paths[@]}"
++
++if command -v docker >/dev/null 2>&1; then
++  sudo docker system prune --all --force --volumes || true
++fi
++
++sudo apt-get clean
++sudo rm -rf /var/lib/apt/lists/*
++
++echo "Filesystem after reclaim:"
++df -h "${GITHUB_WORKSPACE:-$PWD}"
+diff --git a/.github/scripts/setup-swap.sh b/.github/scripts/setup-swap.sh
+index 4c486eb..ff831cd 100644
+--- a/.github/scripts/setup-swap.sh
++++ b/.github/scripts/setup-swap.sh
+@@ -1,39 +1,78 @@
+ #!/usr/bin/env bash
+ set -euo pipefail
+ 
+-SWAPFILE=/swapfile
+-SWAPSIZE=8G   # غيّر الحجم حسب الحاجة (مثلاً 8G، 12G، ...)
++SWAPFILE="${SWAPFILE:-/swapfile-orangefox}"
++SWAPSIZE="${SWAPSIZE:-}"
++MIN_SWAP_GIB="${MIN_SWAP_GIB:-12}"
+ 
+-# If swap already active on the same file, skip
+-if sudo swapon --show=NAME | awk '{print $1}' | grep -qx "$SWAPFILE"; then
+-  echo "Swap already active at $SWAPFILE — skipping creation."
++if ! [[ "${MIN_SWAP_GIB}" =~ ^[1-9][0-9]*$ ]]; then
++  echo "MIN_SWAP_GIB must be a positive integer: ${MIN_SWAP_GIB}" >&2
++  exit 1
++fi
++
++if [[ -n "${SWAPSIZE}" && ! "${SWAPSIZE}" =~ ^[1-9][0-9]*G$ ]]; then
++  echo "SWAPSIZE must use whole GiB units, for example 16G: ${SWAPSIZE}" >&2
++  exit 1
++fi
++
++gib_kib=$((1024 * 1024))
++required_swap_kib=$((MIN_SWAP_GIB * gib_kib))
++current_swap_kib="$(awk '/^SwapTotal:/ { print $2 }' /proc/meminfo)"
++
++if (( current_swap_kib >= required_swap_kib )); then
++  echo "Existing swap satisfies the ${MIN_SWAP_GIB} GiB requirement."
++  free -h
+   exit 0
+ fi
+ 
+-# If file exists but not active, try to remove it safely
+-if [ -f "$SWAPFILE" ]; then
+-  echo "$SWAPFILE exists but not active — attempting to recreate."
+-  sudo swapoff "$SWAPFILE" || true
+-  sudo rm -f "$SWAPFILE"
++if ! sudo -n true; then
++  echo "Passwordless sudo is required to create build swap." >&2
++  exit 1
+ fi
+ 
+-echo "Creating swapfile $SWAPFILE size $SWAPSIZE"
++if sudo swapon --show=NAME --noheadings | awk '{$1=$1; print}' | grep -Fxq "$SWAPFILE"; then
++  echo "${SWAPFILE} is already active but total swap is below ${MIN_SWAP_GIB} GiB." >&2
++  exit 1
++fi
+ 
+-# Try fallocate first, fall back to dd on failure
+-if ! sudo fallocate -l "$SWAPSIZE" "$SWAPFILE" 2>/dev/null; then
+-  echo "fallocate failed — falling back to dd (slower)..."
+-  if [[ "$SWAPSIZE" =~ ^([0-9]+)G$ ]]; then
+-    MB=$(( ${BASH_REMATCH[1]} * 1024 ))
+-    sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count="$MB" status=progress
+-  else
+-    echo "Unsupported SWAPSIZE format: $SWAPSIZE"
++missing_swap_kib=$((required_swap_kib - current_swap_kib))
++# mkswap reserves metadata at the beginning of the file. Keep one MiB of
++# margin so a file sized at the nominal deficit still satisfies SwapTotal.
++minimum_new_swap_kib=$((missing_swap_kib + 1024))
++if [[ -z "${SWAPSIZE}" ]]; then
++  swap_size_gib=$(((minimum_new_swap_kib + gib_kib - 1) / gib_kib))
++  SWAPSIZE="${swap_size_gib}G"
++else
++  swap_size_gib="${SWAPSIZE%G}"
++  supplied_swap_kib=$((swap_size_gib * gib_kib))
++  if (( supplied_swap_kib < minimum_new_swap_kib )); then
++    echo "SWAPSIZE=${SWAPSIZE} is too small to provide ${MIN_SWAP_GIB} GiB total swap." >&2
+     exit 1
+   fi
+ fi
+ 
+-sudo chmod 600 "$SWAPFILE"
+-sudo mkswap "$SWAPFILE"
+-sudo swapon "$SWAPFILE"
+-echo "Swap enabled:"
+-sudo swapon --show
++if [[ -e "${SWAPFILE}" ]]; then
++  sudo rm -f "${SWAPFILE}"
++fi
++
++echo "Creating ${SWAPSIZE} additional swap at ${SWAPFILE}"
++if ! sudo fallocate -l "${SWAPSIZE}" "${SWAPFILE}"; then
++  swap_mib=$((swap_size_gib * 1024))
++  sudo dd if=/dev/zero of="${SWAPFILE}" bs=1M count="${swap_mib}" status=progress
++fi
++
++sudo chmod 600 "${SWAPFILE}"
++sudo mkswap "${SWAPFILE}" >/dev/null
++if ! sudo swapon "${SWAPFILE}"; then
++  sudo rm -f "${SWAPFILE}"
++  echo "Unable to enable ${SWAPFILE}. Preconfigure swap on an ext4 or xfs runner filesystem." >&2
++  exit 1
++fi
++
++current_swap_kib="$(awk '/^SwapTotal:/ { print $2 }' /proc/meminfo)"
++if (( current_swap_kib < required_swap_kib )); then
++  echo "Swap setup did not reach the ${MIN_SWAP_GIB} GiB requirement." >&2
++  exit 1
++fi
++
+ free -h
 diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
-index 049c733..129fb73 100644
+index 4ac7cc9..78d09ce 100644
 --- a/.github/workflows/build.yml
 +++ b/.github/workflows/build.yml
-@@ -4,6 +4,10 @@ on:
-   push:
-     branches:
-       - main
+@@ -1,227 +1,584 @@
+-name: OrangeFox Recovery
++name: Build and publish OrangeFox rodin
+ 
+ on:
++  push:
++    branches:
++      - main
 +    paths-ignore:
 +      - README.md
 +      - docs/**
 +      - .github/ISSUE_TEMPLATE/**
    workflow_dispatch:
      inputs:
-       publish:
-@@ -11,6 +15,15 @@ on:
+-      branch:
+-        description: OrangeFox sync branch
++      publish:
++        description: Create a prerelease with vendor_boot images
          required: true
-         default: true
-         type: boolean
+-        default: "14.1"
+-      lunch:
+-        description: Lunch target
++        default: true
++        type: boolean
 +      firmware_variant:
 +        description: Firmware profile to build; single-profile runs upload an artifact only
-+        required: true
+         required: true
+-        default: "twrp_rodin-ap2a-eng"
+-      build_target:
+-        description: Build target
+-        required: true
+-        default: "recoveryimage"
+-      runner:
+-        description: Runner label
+-        required: true
+-        default: "ubuntu-latest"
+-      build_jobs:
+-        description: Parallel build jobs
+-        required: true
+-        default: "1"
 +        default: all
 +        type: choice
 +        options:
 +          - all
 +          - cn
 +          - global
- 
- permissions:
-   contents: read
-@@ -24,9 +37,41 @@ env:
-   ORANGEFOX_SYNC_REVISION: '11e4406b2bd1de939a26b6bfbad7e371cc3b1fa7'
-   ORANGEFOX_TOP: ${{ github.workspace }}/OrangeFox
-   OF_BUILD_JOBS: '1'
++
++permissions:
++  contents: read
++
++concurrency:
++  group: orangefox-rodin-${{ github.workflow }}-${{ github.ref }}
++  cancel-in-progress: true
++
++env:
++  ORANGEFOX_BRANCH: '14.1'
++  ORANGEFOX_SYNC_REVISION: '11e4406b2bd1de939a26b6bfbad7e371cc3b1fa7'
++  ORANGEFOX_TOP: ${{ github.workspace }}/OrangeFox
++  OF_BUILD_JOBS: '1'
 +  CCACHE_DIR: ${{ github.workspace }}/.ccache
 +  CCACHE_MAXSIZE: '3G'
 +  CCACHE_CACHE_VERSION: '1'
@@ -75,47 +260,152 @@ index 049c733..129fb73 100644
 +          esac
 +
    build:
+-    runs-on: ${{ inputs.runner }}
+-    timeout-minutes: 720
 +    needs: plan
-     # Hosted image layouts vary. The first steps reclaim unrelated payloads,
-     # then verify the observed capacity before building at low concurrency.
-     runs-on: ubuntu-24.04
-@@ -34,7 +79,7 @@ jobs:
-     strategy:
-       fail-fast: false
-       matrix:
--        firmware_variant: [cn, global]
++    # Hosted image layouts vary. The first steps reclaim unrelated payloads,
++    # then verify the observed capacity before building at low concurrency.
++    runs-on: ubuntu-24.04
++    timeout-minutes: 360
++    strategy:
++      fail-fast: false
++      matrix:
 +        firmware_variant: ${{ fromJSON(needs.plan.outputs.variants) }}
-     env:
-       RODIN_FIRMWARE_VARIANT: ${{ matrix.firmware_variant }}
++    env:
++      RODIN_FIRMWARE_VARIANT: ${{ matrix.firmware_variant }}
  
-@@ -95,7 +140,7 @@ jobs:
+     steps:
+-      - name: Checkout device tree
++      - name: Check out device tree
+         uses: actions/checkout@v4
+         with:
++          fetch-depth: 1
+           path: device-tree
+ 
++      - name: Set build metadata
++        id: metadata
++        shell: bash
++        run: |
++          set -euo pipefail
++
++          case "${RODIN_FIRMWARE_VARIANT}" in
++            cn)
++              image_name="OrangeFox-R12.0-Unofficial-rodin-system-compatible.img"
++              disable_avb_image_name="OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img"
++              firmware_baseline="CN OS3.0.303.0.WOJCNXM"
++              ;;
++            global)
++              image_name="OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img"
++              disable_avb_image_name="OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img"
++              firmware_baseline="Global OS3.0.301.0.WOJMIXM"
++              ;;
++            *)
++              echo "Unsupported RODIN_FIRMWARE_VARIANT: ${RODIN_FIRMWARE_VARIANT}" >&2
++              exit 1
++              ;;
++          esac
++
++          echo "artifact_name=orangefox-rodin-release-${RODIN_FIRMWARE_VARIANT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
++          echo "firmware_baseline=${firmware_baseline}" >> "$GITHUB_OUTPUT"
++          echo "image_name=${image_name}" >> "$GITHUB_OUTPUT"
++          echo "disable_avb_image_name=${disable_avb_image_name}" >> "$GITHUB_OUTPUT"
++
++      - name: Remove stale build worktree
++        shell: bash
++        run: |
++          set -euo pipefail
++          rm -rf "$ORANGEFOX_TOP" \
++            "$GITHUB_WORKSPACE/ofox-sync" \
++            "$GITHUB_WORKSPACE/pinned-manifest" \
++            "$GITHUB_WORKSPACE/artifacts"
++          rm -f "$GITHUB_WORKSPACE/ci-gitconfig" \
++            "$GITHUB_WORKSPACE/orangefox-build.log"
++
++      # This is the cleaner used by Klee's known-working hosted workflow.
++      # It removes substantially more hosted-image payload than apt cleanup.
++      - name: Free disk space
++        uses: rokibhasansagar/slimhub_actions@main
++
+       - name: Install host packages
+         shell: bash
+         run: |
            set -euo pipefail
            sudo apt-get update
-           sudo apt-get install -y --no-install-recommends \
--            bc bison build-essential ccache cpio curl flex g++-multilib \
+-          sudo apt-get install -y \
+-            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+-            git gnupg gperf imagemagick lib32ncurses-dev lib32readline-dev \
+-            lib32z1-dev libelf-dev liblz4-tool libncurses-dev libsdl1.2-dev \
+-            libssl-dev libxml2 libxml2-utils lz4 pngcrush rsync schedtool \
+-            squashfs-tools unzip xsltproc zip zlib1g-dev mkbootimg
++          sudo apt-get install -y --no-install-recommends \
 +            bc bison build-essential ccache cpio curl device-tree-compiler flex g++-multilib \
-             gcc-multilib git git-lfs gnupg gperf imagemagick \
-             lib32ncurses-dev lib32readline-dev lib32z1-dev libelf-dev \
-             liblz4-tool libncurses-dev libsdl1.2-dev libssl-dev libxml2 \
-@@ -134,10 +179,12 @@ jobs:
-           set -euo pipefail
++            gcc-multilib git git-lfs gnupg gperf imagemagick \
++            lib32ncurses-dev lib32readline-dev lib32z1-dev libelf-dev \
++            liblz4-tool libncurses-dev libsdl1.2-dev libssl-dev libxml2 \
++            libxml2-utils lz4 openjdk-17-jdk-headless pngcrush \
++            python-is-python3 python3 ripgrep rsync schedtool squashfs-tools \
++            unzip xsltproc zip zlib1g-dev
++          sudo apt-get clean
++          java_home="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
++          test -x "${java_home}/bin/java"
++          echo "JAVA_HOME=${java_home}" >> "$GITHUB_ENV"
++
++      - name: Fetch device blobs
++        shell: bash
++        run: |
++          set -euo pipefail
++          git -C "$GITHUB_WORKSPACE/device-tree" lfs pull
++          git -C "$GITHUB_WORKSPACE/device-tree" lfs fsck
++          test -s "$GITHUB_WORKSPACE/device-tree/prebuilt/vendor_boot_stock.img"
++          if grep -aqF 'version https://git-lfs.github.com/spec/v1' \
++            "$GITHUB_WORKSPACE/device-tree/prebuilt/vendor_boot_stock.img"; then
++            echo "::error::Git LFS did not materialize prebuilt/vendor_boot_stock.img."
++            exit 1
++          fi
  
-           available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
--          required_kib=$((95 * 1024 * 1024))
+-      - name: Install repo tool
++      - name: Setup build swap
+         shell: bash
+         run: |
+           set -euo pipefail
+-          mkdir -p "$HOME/bin"
+-          curl -L https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+-          chmod +x "$HOME/bin/repo"
+-          echo "$HOME/bin" >> "$GITHUB_PATH"
++          # setup-swap.sh creates only the missing capacity plus a header margin.
++          MIN_SWAP_GIB=12 \
++            bash "$GITHUB_WORKSPACE/device-tree/.github/scripts/setup-swap.sh"
+ 
+-      - name: Show runner resources
++      - name: Check runner capacity
+         shell: bash
+         run: |
+-          df -h
++          set -euo pipefail
++
++          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
 +          # The source/out peak needs roughly 83 GiB. Reserve the 3 GiB
 +          # compiler cache as well as the existing headroom before syncing.
 +          required_kib=$((98 * 1024 * 1024))
-           if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
-             available_gib=$((available_kib / 1024 / 1024))
--            echo "::error::OrangeFox rodin needs at least 95 GiB free after hosted-image cleanup and swap setup; found ${available_gib} GiB."
++          if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
++            available_gib=$((available_kib / 1024 / 1024))
 +            echo "::error::OrangeFox rodin needs at least 98 GiB free after hosted-image cleanup and swap setup; found ${available_gib} GiB."
-             echo "::error::Use a GitHub-hosted larger runner if this public standard runner image cannot meet the guard."
-             exit 1
-           fi
-@@ -153,6 +200,26 @@ jobs:
-           df -h "$GITHUB_WORKSPACE"
++            echo "::error::Use a GitHub-hosted larger runner if this public standard runner image cannot meet the guard."
++            exit 1
++          fi
++
++          memory_kib="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
++          required_memory_kib=$((14 * 1024 * 1024))
++          if [[ -z "${memory_kib}" || "${memory_kib}" -lt "${required_memory_kib}" ]]; then
++            memory_gib=$((memory_kib / 1024 / 1024))
++            echo "::error::This workflow needs a public 16 GB-class GitHub-hosted runner; found ${memory_gib} GiB RAM."
++            exit 1
++          fi
++
++          df -h "$GITHUB_WORKSPACE"
            free -h
  
+-      - name: Sync OrangeFox
 +      - name: Restore compiler cache
 +        id: ccache_restore
 +        continue-on-error: true
@@ -136,15 +426,63 @@ index 049c733..129fb73 100644
 +          ccache -z
 +          ccache -p
 +
-       - name: Install repo tool
++      - name: Install repo tool
++        shell: bash
++        run: |
++          set -euo pipefail
++          install -d "$HOME/bin"
++          curl --fail --location --retry 5 --retry-all-errors \
++            https://storage.googleapis.com/git-repo-downloads/repo \
++            --output "$HOME/bin/repo"
++          chmod +x "$HOME/bin/repo"
++          echo "$HOME/bin" >> "$GITHUB_PATH"
++
++      - name: Sync OrangeFox sources
          shell: bash
          run: |
-@@ -203,8 +270,24 @@ jobs:
-           heartbeat_pid=$!
-           trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
- 
--          repo sync -c -j4 --retry-fetches=3 \
--            --no-clone-bundle --no-tags --optimized-fetch
+           set -euo pipefail
++
++          manifest_repo="$GITHUB_WORKSPACE/pinned-manifest"
++          export GIT_CONFIG_GLOBAL="$GITHUB_WORKSPACE/ci-gitconfig"
++          mkdir -p "$manifest_repo"
++          cp "$GITHUB_WORKSPACE/device-tree/manifests/orangefox-fox_14.1-pinned.xml" \
++            "$manifest_repo/default.xml"
++          git -C "$manifest_repo" init --initial-branch=main --quiet
++          git -C "$manifest_repo" config user.name "OrangeFox CI"
++          git -C "$manifest_repo" config user.email "orangefox-ci@localhost"
++          git -C "$manifest_repo" add default.xml
++          git -C "$manifest_repo" commit --quiet -m "Pinned OrangeFox 14.1 manifest"
++          git config --global protocol.file.allow always
++          # GitLab occasionally resets long HTTP/2 fetches from hosted runners.
++          # Keep the transport reproducible and tolerate slow pack transfers.
++          # git config --global http.version HTTP/1.1
++          git config --global http.lowSpeedLimit 1
++          git config --global http.lowSpeedTime 600
++
++          mkdir -p "$ORANGEFOX_TOP"
++          cd "$ORANGEFOX_TOP"
++          repo init --depth=1 \
++            -u "file://${manifest_repo}" \
++            -b main \
++            -m default.xml
++
+           (
+             while sleep 60; do
+-              echo "Heartbeat..."
+-              df -h
++              date -u '+%Y-%m-%dT%H:%M:%SZ sync heartbeat'
++              df -h "$GITHUB_WORKSPACE"
+               free -h
+             done
+           ) &
+-          HEARTBEAT_PID=$!
+-          trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
+-
+-          git clone https://gitlab.com/OrangeFox/sync.git "$GITHUB_WORKSPACE/ofox-sync"
+-          cd "$GITHUB_WORKSPACE/ofox-sync"
++          heartbeat_pid=$!
++          trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
++
 +          sync_succeeded=0
 +          for sync_attempt in 1 2 3; do
 +            if repo sync -c -j4 --retry-fetches=3 \
@@ -152,7 +490,10 @@ index 049c733..129fb73 100644
 +              sync_succeeded=1
 +              break
 +            fi
-+
+ 
+-          ./orangefox_sync.sh \
+-            --branch "${{ inputs.branch }}" \
+-            --path "$GITHUB_WORKSPACE/OrangeFox"
 +            if [[ "$sync_attempt" -lt 3 ]]; then
 +              delay_seconds=$((sync_attempt * 20))
 +              echo "::warning::OrangeFox source sync attempt ${sync_attempt} failed; retrying in ${delay_seconds}s."
@@ -164,42 +505,199 @@ index 049c733..129fb73 100644
 +            exit 1
 +          fi
  
-           kill "$heartbeat_pid" 2>/dev/null || true
+-          kill "$HEARTBEAT_PID" 2>/dev/null || true
++          kill "$heartbeat_pid" 2>/dev/null || true
            trap - EXIT
-@@ -270,13 +353,13 @@ jobs:
  
-           # slimhub reclaims about 138 GiB on the standard hosted image. A
-           # full pinned source checkout leaves about 45 GiB after .repo is
--          # removed; this low-memory, single-job build requires a 35 GiB floor
--          # before Soong starts writing out/.
+-      - name: Copy rodin device tree
++      - name: Apply OrangeFox setup patches
+         shell: bash
+         run: |
+           set -euo pipefail
+-          mkdir -p "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi"
+ 
++          sync_dir="$GITHUB_WORKSPACE/ofox-sync"
++          git clone --filter=blob:none https://gitlab.com/OrangeFox/sync.git "$sync_dir"
++          git -C "$sync_dir" checkout --detach "$ORANGEFOX_SYNC_REVISION"
++          test "$(git -C "$sync_dir" rev-parse HEAD)" = "$ORANGEFOX_SYNC_REVISION"
++
++          vold_patch="$sync_dir/patches/patch-vold-fox_14.1.diff"
++          test "$(sha256sum "$vold_patch" | awk '{print $1}')" = \
++            "29b4b0b387c3185a3dcc69f141a3c84969510547d13ed2de71eefa8423c57778"
++          if git -C "$ORANGEFOX_TOP/system/vold" apply --reverse --check "$vold_patch" 2>/dev/null; then
++            echo "OrangeFox system/vold patch is already applied"
++          else
++            git -C "$ORANGEFOX_TOP/system/vold" apply --check "$vold_patch"
++            git -C "$ORANGEFOX_TOP/system/vold" apply "$vold_patch"
++          fi
++
++      - name: Install rodin device tree
++        shell: bash
++        run: |
++          set -euo pipefail
++          mkdir -p "$ORANGEFOX_TOP/device/xiaomi/rodin"
+           rsync -a --delete \
+-            --exclude ".git" \
+-            --exclude "images" \
++            --exclude .git \
++            --exclude images \
+             "$GITHUB_WORKSPACE/device-tree/" \
+-            "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/"
++            "$ORANGEFOX_TOP/device/xiaomi/rodin/"
+ 
+-      - name: Verify prebuilts
++      - name: Apply source patches & verify
+         shell: bash
+         run: |
+           set -euo pipefail
+-          ls -lh "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/prebuilt/vendor_boot_stock.img"
+-          ls -lh "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/prebuilt/vendor_ramdisk00" || true
++          "$ORANGEFOX_TOP/device/xiaomi/rodin/tools/apply-orangefox-patches.sh" \
++            "$ORANGEFOX_TOP"
+ 
+-      - name: Free space
++      - name: Drop sync metadata
+         shell: bash
+         run: |
+-          rm -rf "$GITHUB_WORKSPACE/OrangeFox/.repo"
+-          rm -rf "$GITHUB_WORKSPACE/ofox-sync"
+-          df -h
++          set -euo pipefail
++          rm -rf "$ORANGEFOX_TOP/.repo" \
++            "$GITHUB_WORKSPACE/ofox-sync" \
++            "$GITHUB_WORKSPACE/pinned-manifest" \
++            "$GITHUB_WORKSPACE/ci-gitconfig"
++          df -h "$GITHUB_WORKSPACE"
+           free -h
+ 
+-      - name: Build OrangeFox
+-        shell: bash
+-        working-directory: ${{ github.workspace }}/OrangeFox
+-        env:
+-          ALLOW_MISSING_DEPENDENCIES: "true"
+-          FOX_BUILD_DEVICE: rodin
+-          FOX_AB_DEVICE: "1"
+-          FOX_VIRTUAL_AB_DEVICE: "1"
+-          OF_FORCE_PREBUILT_KERNEL: "1"
+-          OF_LOW_MEMORY_BUILD: "1"
+-          OF_BUILD_JOBS: "1"
+-          NINJA_ARGS: "-j1 -l1"
+-          SOONG_UI_NINJA_ARGS: "-j1 -l1"
+-          USE_CCACHE: "0"
+-          GOMAXPROCS: "1"
+-          GOGC: "20"
+-          GOMEMLIMIT: "3GiB"
+-          _JAVA_OPTIONS: "-Xmx3g"
+-        run: |
+-          set -eo pipefail
+-          source build/envsetup.sh
+-          lunch "${{ inputs.lunch }}"
+-          mka -j1 adbd "${{ inputs.build_target }}" 2>&1 | tee "$GITHUB_WORKSPACE/orangefox-build.log"
+-
+-      - name: Locate recovery ramdisk
+-        if: always()
++      - name: Check compilation capacity
+         shell: bash
+         run: |
+           set -euo pipefail
+-          PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
+-
+-          find "$PRODUCT" -maxdepth 4 -type f | sort | tee "$GITHUB_WORKSPACE/product_files.txt" || true
+-
+-          RECOVERY_CPIO=""
+-
+-          for f in \
+-            "$PRODUCT/vendor_ramdisk_recovery.cpio" \
+-            "$PRODUCT/obj/PACKAGING/vendor_ramdisk_fragments_intermediates/recovery.cpio.lz4" \
+-            "$PRODUCT/obj/PACKAGING/vendor_boot_intermediates/vendor_ramdisk.cpio.lz4" \
+-            "$PRODUCT/ramdisk-recovery.img"
+-          do
+-            if [ -f "$f" ]; then
+-              RECOVERY_CPIO="$f"
+-              break
+-            fi
+-          done
+ 
+-          if [ -z "$RECOVERY_CPIO" ]; then
+-            echo "::error::No recovery ramdisk found"
++          # slimhub reclaims about 138 GiB on the standard hosted image. A
++          # full pinned source checkout leaves about 45 GiB after .repo is
 +          # removed; reserve the 3 GiB compiler cache and keep a 35 GiB floor
 +          # for Soong before it starts writing out/.
-           available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
--          required_kib=$((35 * 1024 * 1024))
++          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
 +          required_kib=$((38 * 1024 * 1024))
-           if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
-             available_gib=$((available_kib / 1024 / 1024))
--            echo "::error::OrangeFox rodin needs at least 35 GiB free after .repo cleanup; found ${available_gib} GiB."
++          if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
++            available_gib=$((available_kib / 1024 / 1024))
 +            echo "::error::OrangeFox rodin needs at least 38 GiB free after .repo cleanup; found ${available_gib} GiB."
              exit 1
            fi
  
-@@ -296,7 +379,10 @@ jobs:
-           GOMEMLIMIT: '3GiB'
-           GOGC: '20'
-           _JAVA_OPTIONS: '-Xmx3g'
--          USE_CCACHE: '0'
+-          echo "$RECOVERY_CPIO" > "$GITHUB_WORKSPACE/recovery_cpio_path.txt"
+-          ls -lh "$RECOVERY_CPIO"
++          du -sh "$ORANGEFOX_TOP"
++          df -h "$GITHUB_WORKSPACE"
+ 
+-      - name: Repack stock vendor_boot with OrangeFox recovery
++      - name: Build vendor_boot image
+         shell: bash
++        working-directory: ${{ env.ORANGEFOX_TOP }}
++        env:
++          ALLOW_MISSING_DEPENDENCIES: 'true'
++          FOX_BUILD_DEVICE: rodin
++          FOX_AB_DEVICE: '1'
++          FOX_VIRTUAL_AB_DEVICE: '1'
++          OF_FORCE_PREBUILT_KERNEL: '1'
++          OF_LOW_MEMORY_BUILD: '1'
++          GOMEMLIMIT: '3GiB'
++          GOGC: '20'
++          _JAVA_OPTIONS: '-Xmx3g'
 +          USE_CCACHE: '1'
 +          CCACHE_EXEC: /usr/bin/ccache
 +          CCACHE_COMPILERCHECK: content
 +          CCACHE_COMPRESS: 'true'
          run: |
            set -euo pipefail
-           build_jobs="$(nproc)"
-@@ -321,6 +407,14 @@ jobs:
-           kill "$heartbeat_pid" 2>/dev/null || true
-           trap - EXIT
++          build_jobs="$(nproc)"
++          export OF_BUILD_JOBS="$build_jobs"
++          export NINJA_ARGS="-j${build_jobs} -l${build_jobs}"
++          export SOONG_UI_NINJA_ARGS="$NINJA_ARGS"
++          printf 'Using %s Ninja jobs\n' "$build_jobs"
  
+-          PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
+-          STOCK="$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/prebuilt/vendor_boot_stock.img"
+-          RECOVERY_CPIO="$(cat "$GITHUB_WORKSPACE/recovery_cpio_path.txt")"
+-          OUT="$PRODUCT/vendor_boot_patched.img"
+-          UNPACK="$PRODUCT/stock_vendor_boot"
+-
+-          rm -rf "$UNPACK"
+-          mkdir -p "$UNPACK"
++          (
++            while sleep 60; do
++              date -u '+%Y-%m-%dT%H:%M:%SZ build heartbeat'
++              df -h "$GITHUB_WORKSPACE"
++              free -h
++            done
++          ) &
++          heartbeat_pid=$!
++          trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
+ 
+-          unpack_bootimg --boot_img "$STOCK" --out "$UNPACK"
++          device/xiaomi/rodin/build-lowmem.sh vendorbootimage 2>&1 | \
++            tee "$GITHUB_WORKSPACE/orangefox-build.log"
+ 
+-          RUNNER_MKBOOTIMG="$(command -v mkbootimg)"
++          kill "$heartbeat_pid" 2>/dev/null || true
++          trap - EXIT
+ 
+-          "$RUNNER_MKBOOTIMG" \
+-            --vendor_boot "$OUT" \
+-            --header_version 4 \
+-            --pagesize 4096 \
+-            --base 0x40000000 \
+-            --vendor_cmdline "bootopt=64S3,32N2,64N2 erofs.reserved_pages=64" \
+-            --vendor_ramdisk "$UNPACK/vendor_ramdisk00" \
+-            --dtb "$UNPACK/dtb" \
+-            --vendor_bootconfig "$UNPACK/bootconfig"
 +      - name: Report compiler cache
 +        if: always()
 +        shell: bash
@@ -207,14 +705,41 @@ index 049c733..129fb73 100644
 +          set -euo pipefail
 +          ccache -s
 +          du -sh "$CCACHE_DIR"
-+
-       - name: Validate release image
-         shell: bash
-         env:
-@@ -354,6 +448,14 @@ jobs:
-           ln -s "$disable_avb_image" "$avb_validation_dir/vendor_boot.img"
-           "$avbtool" verify_image --image "$avb_validation_dir/vendor_boot.img"
  
+-          unpack_bootimg --boot_img "$OUT" | tee "$GITHUB_WORKSPACE/vendor_boot_patched_info.txt"
++      - name: Validate release image
++        shell: bash
++        env:
++          IMAGE_NAME: ${{ steps.metadata.outputs.image_name }}
++          DISABLE_AVB_IMAGE_NAME: ${{ steps.metadata.outputs.disable_avb_image_name }}
++        run: |
++          set -euo pipefail
++          product="$ORANGEFOX_TOP/out/target/product/rodin"
++          image="$product/$IMAGE_NAME"
++          disable_avb_image="$product/$DISABLE_AVB_IMAGE_NAME"
++          avbtool="$ORANGEFOX_TOP/out/host/linux-x86/bin/avbtool"
++
++          test -f "$image"
++          test -f "${image}.sha256"
++          test -f "$disable_avb_image"
++          test -f "${disable_avb_image}.sha256"
++          test -x "$avbtool"
++          test "$(stat -c %s "$image")" = "67108864"
++          test "$(stat -c %s "$disable_avb_image")" = "67108864"
++          sha256sum --check --strict "${image}.sha256"
++          sha256sum --check --strict "${disable_avb_image}.sha256"
++          test -f "$product/vendor_boot.img"
++          cmp -s "$image" "$product/vendor_boot.img"
++          "$avbtool" verify_image --image "$image"
++
++          # AVB descriptors name the partition vendor_boot. Validate the
++          # alternate image through that filename so avbtool hashes this image,
++          # not the standard product/vendor_boot.img alias.
++          avb_validation_dir="$(mktemp -d)"
++          trap 'rm -rf "$avb_validation_dir"' EXIT
++          ln -s "$disable_avb_image" "$avb_validation_dir/vendor_boot.img"
++          "$avbtool" verify_image --image "$avb_validation_dir/vendor_boot.img"
++
 +      - name: Save compiler cache
 +        if: ${{ success() && steps.ccache_restore.outputs.cache-hit != 'true' }}
 +        continue-on-error: true
@@ -222,26 +747,204 @@ index 049c733..129fb73 100644
 +        with:
 +          path: ${{ env.CCACHE_DIR }}
 +          key: orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-${{ github.sha }}
-+
-       - name: Collect release artifact
-         shell: bash
-         env:
-@@ -419,8 +521,8 @@ jobs:
-             "$GITHUB_WORKSPACE/orangefox-build.log"
  
-   release:
--    if: ${{ needs.build.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
--    needs: build
+-      - name: Collect artifacts
+-        if: always()
++      - name: Collect release artifact
+         shell: bash
++        env:
++          FIRMWARE_BASELINE: ${{ steps.metadata.outputs.firmware_baseline }}
++          IMAGE_NAME: ${{ steps.metadata.outputs.image_name }}
++          DISABLE_AVB_IMAGE_NAME: ${{ steps.metadata.outputs.disable_avb_image_name }}
+         run: |
++          set -euo pipefail
++          product="$ORANGEFOX_TOP/out/target/product/rodin"
++          image="$product/$IMAGE_NAME"
++          disable_avb_image="$product/$DISABLE_AVB_IMAGE_NAME"
++
++          rm -rf "$GITHUB_WORKSPACE/artifacts"
+           mkdir -p "$GITHUB_WORKSPACE/artifacts"
+-          PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
+-
+-          if [ -d "$PRODUCT" ]; then
+-            find "$PRODUCT" \
+-              -maxdepth 1 \
+-              -type f \
+-              \( -name "*.img" -o -name "*.zip" -o -name "*.txt" \) \
+-              -exec cp -v {} "$GITHUB_WORKSPACE/artifacts/" \;
+-          fi
++          cp -fp "$image" "$GITHUB_WORKSPACE/artifacts/$IMAGE_NAME"
++          cp -fp "$disable_avb_image" "$GITHUB_WORKSPACE/artifacts/$DISABLE_AVB_IMAGE_NAME"
++          (
++            cd "$GITHUB_WORKSPACE/artifacts"
++            sha256sum "$IMAGE_NAME" > "${IMAGE_NAME}.sha256"
++            sha256sum "$DISABLE_AVB_IMAGE_NAME" > "${DISABLE_AVB_IMAGE_NAME}.sha256"
++          )
+ 
+-          cp -v "$GITHUB_WORKSPACE/orangefox-build.log" "$GITHUB_WORKSPACE/artifacts/" || true
+-          cp -v "$GITHUB_WORKSPACE/vendor_boot_patched_info.txt" "$GITHUB_WORKSPACE/artifacts/" || true
+-          cp -v "$GITHUB_WORKSPACE/product_files.txt" "$GITHUB_WORKSPACE/artifacts/" || true
+-          cp -v "$GITHUB_WORKSPACE/recovery_cpio_path.txt" "$GITHUB_WORKSPACE/artifacts/" || true
++          cat > "$GITHUB_WORKSPACE/artifacts/build-info-${RODIN_FIRMWARE_VARIANT}.md" <<EOF
++          Automated OrangeFox ${RODIN_FIRMWARE_VARIANT} build for rodin.
+ 
+-      - name: Upload artifacts
+-        if: always()
++          - Device-tree commit: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
++          - OrangeFox branch: ${ORANGEFOX_BRANCH}
++          - Firmware profile: ${FIRMWARE_BASELINE}
++          - GitHub run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
++
++          This artifact contains validated standard and disable-avb system-compatible vendor_boot images.
++          EOF
++
++      - name: Upload release artifact
+         uses: actions/upload-artifact@v4
+         with:
+-          name: orangefox-rodin
++          name: ${{ steps.metadata.outputs.artifact_name }}
+           path: artifacts
++          if-no-files-found: error
++          retention-days: 30
++
++      - name: Upload build diagnostics
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: orangefox-rodin-logs-${{ matrix.firmware_variant }}-${{ github.run_id }}-${{ github.run_attempt }}
++          path: |
++            orangefox-build.log
++            OrangeFox/out/logs
+           if-no-files-found: warn
++          retention-days: 14
++
++      - name: Clean build worktree
++        if: always()
++        shell: bash
++        run: |
++          set -euo pipefail
++          rm -rf "$ORANGEFOX_TOP" \
++            "$GITHUB_WORKSPACE/ofox-sync" \
++            "$GITHUB_WORKSPACE/pinned-manifest" \
++            "$GITHUB_WORKSPACE/artifacts"
++          rm -f "$GITHUB_WORKSPACE/ci-gitconfig" \
++            "$GITHUB_WORKSPACE/orangefox-build.log"
++
++  release:
 +    if: ${{ needs.plan.outputs.full_release == 'true' && needs.build.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
 +    needs: [plan, build]
-     runs-on: ubuntu-24.04
-     timeout-minutes: 30
-     permissions:
++    runs-on: ubuntu-24.04
++    timeout-minutes: 30
++    permissions:
++      contents: write
++
++    steps:
++      - name: Download release artifacts
++        uses: actions/download-artifact@v4
++        with:
++          pattern: orangefox-rodin-release-*-${{ github.run_id }}-${{ github.run_attempt }}
++          path: release-artifacts
++          merge-multiple: true
++
++      - name: Verify images
++        shell: bash
++        run: |
++          set -euo pipefail
++          cd release-artifacts
++          for image in \
++            OrangeFox-R12.0-Unofficial-rodin-system-compatible.img \
++            OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img \
++            OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img \
++            OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img
++          do
++            test -f "${image}"
++            test -f "${image}.sha256"
++            sha256sum --check --strict "${image}.sha256"
++          done
++
++      - name: Create prerelease
++        shell: bash
++        env:
++          GH_TOKEN: ${{ github.token }}
++          GH_REPO: ${{ github.repository }}
++        run: |
++          set -euo pipefail
++          release_tag="rodin-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA::7}"
++          notes="$GITHUB_WORKSPACE/release-notes.md"
++          cat > "$notes" <<EOF
++          Automated OrangeFox build for rodin.
++
++          - Device-tree commit: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
++          - OrangeFox branch: ${ORANGEFOX_BRANCH}
++          - CN firmware profile: OS3.0.303.0.WOJCNXM
++          - Global firmware profile: OS3.0.301.0.WOJMIXM
++          - GitHub run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
++
++          This prerelease contains standard and disable-avb system-compatible vendor_boot images for both firmware profiles.
++          EOF
++
++          gh release create "$release_tag" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img.sha256" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img.sha256" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img.sha256" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img.sha256" \
++            --repo "$GH_REPO" \
++            --target "$GITHUB_SHA" \
++            --title "OrangeFox rodin CI ${GITHUB_SHA::7}" \
++            --notes-file "$notes" \
++            --prerelease
+diff --git a/Android.bp b/Android.bp
+index 963844f..8aaa90d 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -11,13 +11,36 @@ cc_library_shared {
+     ],
+ }
+ 
++cc_prebuilt_library_shared {
++    name: "rodin_android.hardware.secure_element-V1-ndk",
++    srcs: ["proprietary/vendor/lib64/android.hardware.secure_element-V1-ndk.so"],
++    compile_multilib: "64",
++    recovery_available: true,
++    check_elf_files: false,
++    stl: "none",
++}
++
++cc_prebuilt_library_shared {
++    name: "rodin_android.se.omapi-V1-ndk",
++    srcs: ["proprietary/vendor/lib64/android.se.omapi-V1-ndk.so"],
++    compile_multilib: "64",
++    recovery_available: true,
++    check_elf_files: false,
++    stl: "none",
++}
++
+ cc_binary {
+     name: "rodin_omapi_bridge",
+     recovery: true,
+     srcs: ["omapi_bridge/omapi_bridge.cpp"],
++    generated_headers: [
++        "android.hardware.secure_element-V1-ndk-source",
++        "android.se.omapi-V1-ndk-source",
++    ],
+     shared_libs: [
+-        "android.hardware.secure_element-V1-ndk",
+-        "android.se.omapi-V1-ndk",
++        "rodin_android.hardware.secure_element-V1-ndk",
++        "rodin_android.se.omapi-V1-ndk",
++        "librodin_libcxx_compat",
+         "libbase",
+         "libbinder_ndk",
+         "liblog",
 diff --git a/BoardConfig.mk b/BoardConfig.mk
-index 65b4845..55d6b41 100644
+index 70dfc37..d231a02 100644
 --- a/BoardConfig.mk
 +++ b/BoardConfig.mk
-@@ -77,7 +77,7 @@ BOARD_USES_METADATA_PARTITION := true
+@@ -77,9 +77,12 @@ BOARD_USES_METADATA_PARTITION := true
  
  # Prune the full ncurses database after OrangeFox finishes preparing the
  # ramdisk, while retaining common terminal definitions.
@@ -249,30 +952,95 @@ index 65b4845..55d6b41 100644
 +BOARD_RECOVERY_IMAGE_PREPARE = RODIN_FIRMWARE_VARIANT=$(RODIN_FIRMWARE_VARIANT) bash $(DEVICE_PATH)/fox_callback.sh $(TARGET_RECOVERY_ROOT_OUT) --first-call
  
  AB_OTA_UPDATER := true
- # The retained stock MediaTek service is AIDL. This also makes OrangeFox's
-@@ -130,6 +130,12 @@ TARGET_SCREEN_WIDTH := 1220
++# The retained stock MediaTek service is AIDL. This also makes OrangeFox's
++# slot selector use the same service as the updater's bootctl client.
++OF_USE_AIDL_BOOT_CONTROL := 1
+ AB_OTA_PARTITIONS += \
+     boot \
+     init_boot \
+@@ -127,6 +130,12 @@ TARGET_SCREEN_WIDTH := 1220
  TARGET_SCREEN_HEIGHT := 2712
  TW_MAX_BRIGHTNESS := 2047
  TW_DEFAULT_BRIGHTNESS := 1000
-+# Global's 6.6.89 MTK DRM accepts the atomic CRTC disable but can fail to
-+# restore the panel on the matching enable commit. The working backlight node
-+# still gives blanktimer a reversible screen-off path without touching DRM.
++# Global's stock 6.6.89 MTK DRM can lose the panel after Recovery completely
++# tears down and rebuilds the atomic pipeline. Keep its original blanktimer
++# state machine, but retain the configured pipeline across screen blanking.
 +ifeq ($(RODIN_FIRMWARE_VARIANT),global)
-+TW_NO_SCREEN_BLANK := true
++TW_DRM_BLANK_KEEP_PIPELINE := true
 +endif
  # Read capacity directly from the working kernel power-supply node.
  TW_USE_LEGACY_BATTERY_SERVICES := true
  TW_INCLUDE_FASTBOOTD := true
+@@ -140,6 +149,9 @@ TW_DEFAULT_LANGUAGE := zh_CN
+ OF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT := 1
+ TW_HAS_MTP := true
+ TW_MTP_DEVICE := /dev/mtp_usb
++# This enables the legacy "USB Storage" gadget action. It is deliberately
++# left disabled: OTG is a host-mode, removable-storage workflow and must not
++# expose /data to a connected computer as a block device.
+ TW_NO_USB_STORAGE := true
+ TW_EXCLUDE_DEFAULT_USB_INIT := true
+ TW_INPUT_BLACKLIST := "hbtp_vm"
+@@ -155,6 +167,9 @@ BOARD_HAS_LARGE_FILESYSTEM := true
+ TW_INCLUDE_CRYPTO := true
+ TW_INCLUDE_FBE := true
+ TW_INCLUDE_FBE_METADATA_DECRYPT := true
++# Format Data must release the FBE dm-default-key mapping before mkfs writes
++# the physical userdata block device.
++OF_USE_DMCTL := 1
+ TW_USE_FSCRYPT_POLICY := 2
+ TW_RECOVERY_ADDITIONAL_RELINK_LIBRARY_FILES = \
+     $(TARGET_OUT_SHARED_LIBRARIES)/libtrusty.so \
 diff --git a/README.md b/README.md
-index d7f130d..77a7826 100644
+index fc739b3..c12d5bd 100644
 --- a/README.md
 +++ b/README.md
-@@ -34,14 +34,58 @@ device's validated 60 MB combined-ramdisk limit. The Mount menu's "USB
- Storage" gadget action remains disabled because it is unrelated to host-mode
- OTG and would export phone storage to a computer.
+@@ -1,18 +1,6 @@
+-# OrangeFox Recovery device tree for Redmi Turbo 4 (rodin)
++# orangefox_twrp_device_xiaomi_rodin
++### Orangefox device tree for rodin (Redmi Turbo 4 / Poco X7 Pro)
  
--For the first on-device test, boot recovery, attach one OTG flash drive, and
--verify both the mount and the selected block device before performing any write:
+-Chinese build and porting documentation:
+-
+-- [`manifests/README_CN.md`](manifests/README_CN.md)
+-- [`docs/BUILD_FROM_SOURCE_CN.md`](docs/BUILD_FROM_SOURCE_CN.md)
+-- [`docs/BLOBS_AND_PORTING_CN.md`](docs/BLOBS_AND_PORTING_CN.md)
+-- [`docs/COMPATIBILITY_CN.md`](docs/COMPATIBILITY_CN.md)
+-- [`docs/TROUBLESHOOTING_CN.md`](docs/TROUBLESHOOTING_CN.md)
+-
+-Device tree for the Redmi Turbo 4 (`rodin`), built against OrangeFox 14.1.
+-The vendor boot layout, MediaTek HALs, firmware, and kernel modules follow
+-[`KSN2redawew/android_device_xiaomi_rodin-twrp`](https://github.com/KSN2redawew/android_device_xiaomi_rodin-twrp)
+-at commit `50c9afc`. Firmware-specific boot data comes from the supplied
+-Android 16 HyperOS partition dump.
+ 
+ ## Device and firmware base
+ 
+@@ -25,9 +13,104 @@ Android 16 HyperOS partition dump.
+ - Installed system reported by the owner: Android 16 HyperOS
+ - Display: `1220x2712`; OrangeFox theme coordinate space: `1080x2400`
+ 
++Support:
++
++-  **Data decrypt (FBE)**
++-  **USB OTG storage**
++-  **Battery and temperature display**
++-  **Screen brightness adjustment**
++-  **Multiple languages(include Chinese)**
++
+ The vendor metadata remains Android 15 because the Android 16 system uses an
+ Android 15 vendor/GKI base.
+ 
++USB OTG resolves devices dynamically from `/sys/block`: only SCSI disks whose
++parent path contains `/usb` are eligible, their first partition is preferred,
++and the raw disk is used only when no partition exists. This prevents a fixed
++`/dev/block/sda1` assumption from mounting a non-USB device. FAT and exFAT
++continue to use the recovery's existing filesystem support. NTFS-3G is
++excluded until its compressed payload can be shown to remain inside the
++device's validated 60 MB combined-ramdisk limit. The Mount menu's "USB
++Storage" gadget action remains disabled because it is unrelated to host-mode
++OTG and would export phone storage to a computer.
++
 +The same Type-C port cannot be a computer gadget and a USB host at once. On
 +rodin, VBUS is not enabled until Recovery explicitly selects host mode, so
 +automatic Type-C role detection cannot discover an unpowered flash drive. The
@@ -295,10 +1063,14 @@ index d7f130d..77a7826 100644
 +`PRODUCT_COPY_FILES` to it. This makes the module set independent of callback
 +ordering. The repacker also fails unless Global's Type-C/OTG stack exposes
 +`vbus_switch`; do not flash the CN image on Global firmware. Global's DRM
-+driver does not reliably restore an atomic CRTC after a Recovery screen blank,
-+so that profile retains the lock and timeout UI but blanks by setting the
-+working panel backlight to zero rather than disabling the CRTC. CN retains its
-+normal DRM blank path.
++profile retains the normal `blanktimer -> gr_fb_blank()` state machine and does
++not define `TW_NO_SCREEN_BLANK`. After the initial full atomic setup, its
++screen-off and screen-on commits change only the CRTC `ACTIVE` property; the
++connector, mode, and plane bindings remain configured. This avoids the
++stock-Global panel restore failure caused by tearing down and rebuilding that
++pipeline on every lock while retaining real DRM blanking. Recovery exit still
++performs one complete atomic teardown before releasing its mode and framebuffer
++objects.
 +
 +The stock DTB additionally makes the xHCI node depend on Android's USB audio
 +offload service. Recovery deliberately does not load that audio/modem stack;
@@ -310,9 +1082,9 @@ index d7f130d..77a7826 100644
 +
 +For the first on-device test, boot recovery and verify the computer-side state
 +first:
- 
- ```bash
- adb shell 'lsmod | grep -E "xhci|mtu3|usb"'
++
++```bash
++adb shell 'lsmod | grep -E "xhci|mtu3|usb"'
 +adb shell 'cat /sys/class/typec/port0/power_role; cat /sys/class/usb_role/11201000.usb0-role-switch/role'
 +```
 +
@@ -323,32 +1095,71 @@ index d7f130d..77a7826 100644
 +then verify the selected block device and transition log:
 +
 +```bash
- adb shell 'for d in /sys/block/sd*/device; do readlink -f "$d"; done 2>/dev/null | grep /usb'
--adb shell 'ls -l /dev/block/sd* 2>/dev/null; mount | grep usb_otg'
--adb shell 'grep -E "USB OTG|usb_otg|ntfs|exfat" /tmp/recovery.log | tail -80'
++adb shell 'for d in /sys/block/sd*/device; do readlink -f "$d"; done 2>/dev/null | grep /usb'
 +adb shell 'grep -E "USB OTG|usb_otg" /tmp/recovery.log | tail -100'
- ```
++```
++
++The expected mount point is `/usb_otg`. Test FAT and exFAT media. A drive that
++draws more current than the phone can supply requires a powered hub; that is a
++power limitation, not a filesystem failure.
++
++Build and porting documentation:
++
++- [`manifests/README_CN.md`](manifests/README_CN.md)
++- [`docs/BUILD_FROM_SOURCE_CN.md`](docs/BUILD_FROM_SOURCE_CN.md)
++- [`docs/DEVICE_TREE_PATCHES_CN.md`](docs/DEVICE_TREE_PATCHES_CN.md)
++- [`docs/BLOBS_AND_PORTING_CN.md`](docs/BLOBS_AND_PORTING_CN.md)
++- [`docs/COMPATIBILITY_CN.md`](docs/COMPATIBILITY_CN.md)
++- [`docs/TROUBLESHOOTING_CN.md`](docs/TROUBLESHOOTING_CN.md)
++
++Device tree for the Redmi Turbo 4 (`rodin`), built against OrangeFox 14.1.
++The vendor boot layout, MediaTek HALs, firmware, and kernel modules follow
++[`KSN2redawew/android_device_xiaomi_rodin-twrp`](https://github.com/KSN2redawew/android_device_xiaomi_rodin-twrp)
++at commit `50c9afc`. Firmware-specific boot data comes from the supplied
++Android 16 HyperOS partition dump.
++
+ ## Vendor boot layout
  
- The expected mount point is `/usb_otg`. Test FAT and exFAT media. A drive that
-@@ -214,7 +258,8 @@ container layers that are unused by this build, installs only the required host
- packages, and adds only the swap deficit plus a small header margin when the
- runner has insufficient swap. This guarantees at least 12 GiB of usable swap
- without discarding any swap already supplied by the hosted image.
--The capacity guard then requires 95 GiB free space and a 14 GiB RAM-class VM.
+ The delivered whole image uses the Android vendor boot v4 fragment model:
+@@ -154,6 +237,63 @@ host, keep at least 12 GiB of swap enabled. The low-memory wrapper also runs
+ `tools/build-system-compatible-vendor-boot.sh`; a direct `mka vendorbootimage`
+ only creates an intermediate recovery-only layout and must not be flashed.
+ 
++## GitHub Actions
++
++Pushing to `main` starts the `Build and publish OrangeFox rodin` workflow. It
++initializes `repo` from the device tree's pinned 14.1 manifest and builds CN
++`OS3.0.303.0.WOJCNXM` and Global `OS3.0.301.0.WOJMIXM` profiles independently.
++Each profile uploads a standard 64 MiB system-compatible image and a
++`disable-avb` variant with SHA-256 files. The release job creates an immutable
++prerelease containing all four images, tagged with the workflow run and source
++commit. `workflow_dispatch` can suppress publishing for a test run. The two
++firmware profiles are not interchangeable.
++
++The alternate image retains a valid vendor_boot AVB hash footer, adds bootconfig
++assignments that override Android's view of bootloader state, and removes only
++the `avb`, `avb=*`, and `avb_keys=*` fs_mgr flags from the type-1 platform
++first-stage fstab used for normal Android boot. It is for devices whose LK has
++already permitted flashing but still reports a locked state to Android, or that
++need to skip Android first-stage AVB mount validation. It does not unlock the
++bootloader or alter Boot ROM/LK verification policy.
++
++The build job uses GitHub-hosted `ubuntu-24.04`; no self-hosted runner needs to
++be registered. It deletes Android SDKs, language tool caches, browsers and
++container layers that are unused by this build, installs only the required host
++packages, and adds only the swap deficit plus a small header margin when the
++runner has insufficient swap. This guarantees at least 12 GiB of usable swap
++without discarding any swap already supplied by the hosted image.
 +The capacity guard reserves the compiler cache and requires 98 GiB free space
 +and a 14 GiB RAM-class VM.
- Runner image layouts can change, so the job prints and checks the observed disk
- and memory state rather than assuming a fixed hosted-VM allocation. It stops
- before `repo sync` if the guard cannot be satisfied. In that case, configure a
-@@ -223,11 +268,24 @@ cannot safely complete this source tree. GitHub-hosted jobs also have a six-hour
- execution limit, so the build remains low-concurrency. The repository must permit
- `GITHUB_TOKEN` write access to repository contents for prerelease creation.
- 
--The workflow checks space again after deleting `.repo` and before Soong starts;
--it requires 70 GiB at that stage. CN and Global runs use separate concurrency
--groups, so a manual Global build does not cancel an in-flight CN build. CN keeps
--the prior concurrency key, so its next push also cancels any queued legacy
--self-hosted CN run.
++Runner image layouts can change, so the job prints and checks the observed disk
++and memory state rather than assuming a fixed hosted-VM allocation. It stops
++before `repo sync` if the guard cannot be satisfied. In that case, configure a
++GitHub-hosted larger runner and use its workflow label; the standard runner
++cannot safely complete this source tree. GitHub-hosted jobs also have a six-hour
++execution limit, so the build remains low-concurrency. The repository must permit
++`GITHUB_TOKEN` write access to repository contents for prerelease creation.
++
 +The workflow caches up to 3 GiB of `ccache` per firmware profile. It never
 +caches the full Android tree or `out/`: those are far too large for the hosted
 +cache and restoring them would erase the benefit. The first build for a source
@@ -367,9 +1178,13 @@ index d7f130d..77a7826 100644
 +
 +Pushes that change only `README.md`, `docs/`, or issue templates skip the
 +build entirely.
++
++Only successful builds of `main` can create prereleases. A manual test from
++another ref still uploads its artifact but cannot publish a repository release.
++
+ ## Controlled device test
  
- Only successful builds of `main` can create prereleases. A manual test from
- another ref still uploads its artifact but cannot publish a repository release.
+ Xiaomi's user-build fastbootd does not support `fetch`, so
 diff --git a/build-lowmem.sh b/build-lowmem.sh
 index fdd2932..6840863 100755
 --- a/build-lowmem.sh
@@ -444,10 +1259,10 @@ index fdd2932..6840863 100755
  set -e
  
 diff --git a/device.mk b/device.mk
-index 9eb2642..4dc5c7d 100644
+index 79f478c..4dc5c7d 100644
 --- a/device.mk
 +++ b/device.mk
-@@ -62,6 +62,21 @@ PRODUCT_PACKAGES_DEBUG += \
+@@ -62,7 +62,23 @@ PRODUCT_PACKAGES_DEBUG += \
      bootctl \
      logcat
  
@@ -467,9 +1282,11 @@ index 9eb2642..4dc5c7d 100644
 +endif
 +
  PRODUCT_COPY_FILES += \
-     $(DEVICE_PATH)/recovery/root/init.recovery.bootctl.rc:recovery/root/init.recovery.bootctl.rc \
++    $(DEVICE_PATH)/recovery/root/init.recovery.bootctl.rc:recovery/root/init.recovery.bootctl.rc \
      $(DEVICE_PATH)/recovery/root/init.recovery.hardware.rc:recovery/root/init.recovery.hardware.rc \
-@@ -72,12 +87,13 @@ PRODUCT_COPY_FILES += \
+     $(DEVICE_PATH)/recovery/root/init.recovery.keymint.rc:recovery/root/init.recovery.keymint.rc \
+     $(DEVICE_PATH)/recovery/root/init.recovery.mt6899.rc:recovery/root/init.recovery.mt6899.rc \
+@@ -71,12 +87,13 @@ PRODUCT_COPY_FILES += \
      $(DEVICE_PATH)/recovery/root/system/bin/wait-touch-service.sh:recovery/root/system/bin/wait-touch-service.sh \
      $(DEVICE_PATH)/recovery/root/system/bin/load-haptics-module.sh:recovery/root/system/bin/load-haptics-module.sh \
      $(DEVICE_PATH)/proprietary/fonts/MiSans.ttf:recovery/root/twres/fonts/MiSans.ttf \
@@ -507,22 +1324,35 @@ index 2f227ef..4b54819 100644
  不能直接加载原始 `scp.ko`。实机 pstore 已确认它会在缺少 SCP reserved-memory 的 Recovery 环境中于 `scp_region_info_init()` 触发 kernel panic。
  
 diff --git a/docs/BUILD_FROM_SOURCE_CN.md b/docs/BUILD_FROM_SOURCE_CN.md
-index 9613a69..2b52f82 100644
+index d28fd7e..58b0f71 100644
 --- a/docs/BUILD_FROM_SOURCE_CN.md
 +++ b/docs/BUILD_FROM_SOURCE_CN.md
-@@ -81,21 +81,29 @@ swap。CI 只补足缺少的 swap 并为 header 预留余量，不会丢弃托
- swap。
+@@ -35,6 +35,7 @@ sha256sum rodin-device-tree-*.tar.zst
+ | --- | --- |
+ | OrangeFox 分支 | `fox_14.1` |
+ | `bootable/recovery` 基线 | `fd98f33a722bd0bd52034f170bb91e2862654d6b` |
++| `bootable/recovery` 来源 | OrangeFox `fox_14.1`（manifest 使用 50 层浅克隆覆盖全局 1 层设置） |
+ | `build/make` 基线 | `506df226dd003a364916b6b3ee1eb3bf9064f97f` |
+ | `vendor/recovery` 基线 | `0d7959e6538db5ddfff892cf7dfe207c68b0b753` |
+ | 设备 | Redmi Turbo 4 / `rodin` / `24129RT7CC` |
+@@ -70,6 +71,48 @@ sudo apt install -y \
  
- rodin 在删除 `.repo` 后，源码与完整 `out/` 的构建峰值仍约为 83 GiB。因此
--工作流只会在 swap 建立后仍有至少 95 GiB 可用空间、且物理内存至少 14 GiB
+ 不要在空间不足的根分区构建。Soong 生成构建图时会出现短时高内存峰值。
+ 
++### GitHub Actions 标准托管 Runner
++
++设备树中的 `.github/workflows/build.yml` 使用 GitHub 托管的
++`ubuntu-24.04`，不需要自行注册 `self-hosted` Runner。流程会在同步源码前
++删除该临时 VM 上不参与构建的 Android SDK、语言工具缓存、浏览器和 Docker
++层，然后安装构建依赖、从 Git LFS 拉取 `prebuilt/` 输入，并补足至少 12 GiB
++swap。CI 只补足缺少的 swap 并为 header 预留余量，不会丢弃托管镜像已有的
++swap。
++
++rodin 在删除 `.repo` 后，源码与完整 `out/` 的构建峰值仍约为 83 GiB。因此
 +工作流只会在 swap 建立后仍有至少 98 GiB 可用空间、且物理内存至少 14 GiB
- 时继续同步和构建。看到 `df` 中约 63 GiB 空闲，只说明 Job 已经被 GitHub
- 托管 VM 调度，尚不足以证明完整构建可完成。
- 
--同步完成并删除 `.repo` 后，工作流会再次要求至少 70 GiB 可用空间才启动
--Soong。CN 与 Global 使用不同的并发组，手动 Global 构建不会取消正在运行的
--CN 构建；CN 保留原并发键，因此下一次推送也会自动取消仍在排队的旧
--self-hosted CN 任务。
++时继续同步和构建。看到 `df` 中约 63 GiB 空闲，只说明 Job 已经被 GitHub
++托管 VM 调度，尚不足以证明完整构建可完成。
++
 +工作流只缓存每个固件 profile 最多 3 GiB 的 `ccache`，不缓存完整源码或 `out/`；后两者
 +体积过大，传输与解压反而会拖慢 GitHub 托管 Runner。首次构建仍是冷构建，后续构建会复用
 +C/C++ 编译结果，并在日志中输出命中率。同步完成并删除 `.repo` 后，工作流会为该缓存保留
@@ -535,18 +1365,48 @@ index 9613a69..2b52f82 100644
 +prerelease。
 +
 +只修改 `README.md`、`docs/` 或 issue template 的 push 会被 `paths-ignore` 跳过，不消耗完整构建。
- 
- 只有 `main` 上成功的构建会创建 prerelease。其他 ref 的手动构建仍会上传
- artifact，但不会向仓库发布 release。
- 
- GitHub 托管镜像的实际磁盘布局会变化，因此工作流以运行时的 `df` 与
- `/proc/meminfo` 为准，而不假定固定容量。GitHub 托管 Job 最长运行 6 小时，
--故工作流默认只使用两个并行编译任务。若清理后的实际空间仍未达到 95 GiB，
++
++只有 `main` 上成功的构建会创建 prerelease。其他 ref 的手动构建仍会上传
++artifact，但不会向仓库发布 release。
++
++GitHub 托管镜像的实际磁盘布局会变化，因此工作流以运行时的 `df` 与
++`/proc/meminfo` 为准，而不假定固定容量。GitHub 托管 Job 最长运行 6 小时，
 +故工作流默认只使用两个并行编译任务。若清理后的实际空间仍未达到 98 GiB，
- 应配置 GitHub-hosted larger runner，而不是降低容量阈值或改回 recovery-only
- 打包路径。
++应配置 GitHub-hosted larger runner，而不是降低容量阈值或改回 recovery-only
++打包路径。
++
++`bootable/recovery` 的本地路径与上游项目名不同：OrangeFox GitLab 项目名必须是
++`bootable/Recovery`，而不是 Android mirror 所用的 `android_bootable_recovery`。
++Repo 以 `remote.fetch + project.name` 构造 clone URL，因此前者会得到
++`https://gitlab.com/OrangeFox/bootable/Recovery.git`。CI 仍以固定 SHA 同步该项目，
++使用 HTTP/1.1，并对瞬时 fetch 错误重试三次。
++
+ ## 4. 获取 OrangeFox 14.1
  
-@@ -145,6 +153,26 @@ recovery patch 包含：
+ ```bash
+@@ -87,7 +130,7 @@ test -f build/envsetup.sh
+ git -C bootable/recovery rev-parse HEAD
+ ```
+ 
+-如果 `bootable/recovery` 已偏离上述基线，设备 patch 可能需要手动 rebase，不能强行 `git apply`。
++上游 `14.1` 分支会继续前进，以上官方同步命令不保证得到本设备已验证的源码快照。正式构建必须让 `device/xiaomi/rodin/manifests/orangefox-fox_14.1-pinned.xml` 中的 662 个 revision 全部通过预检；CI 会以该文件初始化 `repo`。若手动同步后的 `bootable/recovery` 已偏离上述基线，先按该 manifest 恢复源码，不要设置 `RODIN_ALLOW_UNPINNED_SOURCE=1` 绕过检查或强行 `git apply`。
+ 
+ ## 5. 放置设备树并应用 Fox 源码 patch
+ 
+@@ -97,10 +140,11 @@ git -C bootable/recovery rev-parse HEAD
+ device/xiaomi/rodin
+ ```
+ 
+-设备树包含两份源码 patch：
++设备树包含两份 OrangeFox 共享源码 patch，以及一份可移植的设备树修复 patch：
+ 
+ - `orangefox-build-make.patch`：OrangeFox 14.1 标准构建桥接，负责调用 `vendor/recovery/OrangeFox_A14.sh`。官方 vendor 克隆流程通常已经应用，脚本会自动跳过。
+ - `orangefox-recovery.patch`：本设备实测所需的 recovery 共享源码修复。
++- `rodin-fbe-global.patch`：针对本设备树初始快照的 FBE/OMAPI/Weaver 修复及 CN/Global 构建 profile。它不包含 Global 固件二进制输入，应用方法和变更说明见 [DEVICE_TREE_PATCHES_CN.md](DEVICE_TREE_PATCHES_CN.md)。
+ 
+ recovery patch 包含：
+ 
+@@ -109,6 +153,30 @@ recovery patch 包含：
  - rodin 解密后禁止完整 GUI package 重建，避免 recovery `SIGSEGV`。
  - 解密页面显示前加载默认简体中文。
  - MiSans 主题选择项和 SIH6887 震动节点支持。
@@ -562,36 +1422,251 @@ index 9613a69..2b52f82 100644
 +  Android 构建环境允许的 `python3`，不依赖被 Soong PATH 限制的 `perl`。repacker 会验证其中的
 +  Type-C/OTG 模块及 `vbus_switch`，并将最终 Recovery 的 7 个模块逐字节比对为已修补的
 +  Global 输入，防止 CN recovery fragment 被误用；DTB 与 CN 基线完全相同，仍会移除 xHCI 的
-+  `mediatek,usb-offload` 属性。Global 的 6.6.89 MTK DRM 在 Recovery 中不能可靠地从
-+  atomic CRTC blank 恢复，因此仅该 profile 定义 `TW_NO_SCREEN_BLANK`：锁屏、超时和亮度恢复
-+  仍然可用，但以 `panel1-backlight/brightness=0` 代替关闭 CRTC。CN 不使用此 workaround。
++  `mediatek,usb-offload` 属性。Global 保留原始的 `blanktimer -> gr_fb_blank()` 锁屏状态机，
++  但首次完整配置 atomic DRM pipeline 后，后续锁屏和唤醒只切换 CRTC `ACTIVE=0/1`，保留
++  connector、mode 和 plane 绑定，避免 stock 6.6.89 在完整 teardown/rebuild 后无法恢复面板。
++  仅 Recovery 退出时才完整拆除这些绑定，再释放 mode blob 和 framebuffer；
++  `TW_NO_SCREEN_BLANK` 仍不得定义。
 +- stock DTB 的 xHCI 节点依赖 Android USB audio offload；Recovery 不加载其音频/基带依赖。
 +  repacker 会用 `fdtput` 在临时 DTB 删除唯一的 `mediatek,usb-offload` 属性，并保留、更新
 +  MTK wrapper 长度字段。构建主机必须提供 `device-tree-compiler`（`fdtget`、`fdtput`）。
 +- Recovery 二阶段 `libprocessgroup_setup.so` 的构建来源修复，并在最终重打包前验证其
 +  ELF magic；若该检查失败，停止构建，不能刷写输出目录中遗留的旧镜像。
- - Virtual A/B `Format Data` 时保留 `vendor -> vendor_a` 等无槽位 mapper 别名，避免在 pending-merge 检查前错误删除别名而中止格式化；`*_a`/`*_b` 与 `-cow` 的精确清理不变。
- - Android 16 FBE 已解密后，先用 Recovery 内置 `dmctl` 释放 `/dev/block/mapper/userdata`，确认映射消失后才格式化物理 userdata 分区；删除失败会中止操作。
++- Virtual A/B `Format Data` 时保留 `vendor -> vendor_a` 等无槽位 mapper 别名，避免在 pending-merge 检查前错误删除别名而中止格式化；`*_a`/`*_b` 与 `-cow` 的精确清理不变。
++- Android 16 FBE 已解密后，先用 Recovery 内置 `dmctl` 释放 `/dev/block/mapper/userdata`，确认映射消失后才格式化物理 userdata 分区；删除失败会中止操作。
  
-diff --git a/docs/DEVICE_TREE_PATCHES_CN.md b/docs/DEVICE_TREE_PATCHES_CN.md
-index d1a855d..d634f27 100644
---- a/docs/DEVICE_TREE_PATCHES_CN.md
+ 在干净源码中执行：
+ 
+@@ -116,12 +184,21 @@ recovery patch 包含：
+ device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
+ ```
+ 
+-脚本可重复运行。它会检查并应用两份 patch，从 OrangeFox 自带 `extra-languages` 安装 `es_ES`、`hu_HU`、`zh_CN` 和 `zh_TW`，保留、验证内置的 `ja_JP`，然后自动运行完整构建输入预检。预检默认要求 pinned manifest 中全部 660 个 repo 项目以及独立的 `vendor/recovery` 与已验证 revision 一致，并检查 FocalTech 模块、算法库、配置、模块元数据、init 链接和运行时加载项。
++脚本可重复运行。它会检查并应用 `build/make`、`vendor/twrp` 和 `bootable/recovery` 三份 patch，从 OrangeFox 自带 `extra-languages` 安装 `es_ES`、`hu_HU`、`zh_CN` 和 `zh_TW`，保留、验证内置的 `ja_JP`，然后自动运行完整构建输入预检。预检默认要求 pinned manifest 中全部 662 个 repo 项目（包括 OrangeFox `vendor/recovery` 和 `external/se_omapi`）与已验证 revision 一致，并检查 FocalTech 模块、算法库、配置、模块元数据、init 链接和运行时加载项。
+ 
+ `RODIN_ALLOW_UNPINNED_SOURCE=1` 只用于主动移植到新 revision；它会跳过源码 revision 限制，但不会跳过 blob、FocalTech 资源和 patch 标记检查。普通重复构建不要设置。
+ 
+ 如果 patch 因源码版本变化而不能应用，先把对应仓库恢复到表中的基线，或人工 rebase patch。不要使用 `git apply --reject` 后忽略冲突继续构建。
+ 
++若拿到的是未包含 FBE/Global 修复的原始 rodin 设备树，在将该 patch 放在设备树外部后先做 dry-run：
++
++```bash
++patch -d device/xiaomi/rodin -p1 --dry-run < /path/to/rodin-fbe-global.patch
++patch -d device/xiaomi/rodin -p1 < /path/to/rodin-fbe-global.patch
++```
++
++patch 成功后，Global profile 还必须导入对应固件 fragment；CN 默认 profile 不需要此步骤。
++
+ ## 6. 准备 stock vendor_boot 输入
+ 
+ 不要从网络上随便下载其他版本的 `vendor_boot`。优先使用当前系统 OTA/分区备份中提取的镜像。
+@@ -160,6 +237,19 @@ ls -lh "$PRODUCT_TMP"
+ 
+ 当前已验证输入的哈希见 [prebuilt/README.md](../prebuilt/README.md)。
+ 
++CN 是默认 profile。Global OS3.0.301.0.WOJMIXM 必须选择它自己的 type-1
++platform fragment；不要把默认 CN 成品刷入 Global 系统。
++
++从完整 Global 固件包填充该 fragment：
++
++```bash
++device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
++  /path/to/rodin_global_images_OS3.0.301.0.WOJMIXM_16.0/images/vendor_boot.img
++```
++
++脚本只接受已验证的 Global 3.0.301 `vendor_boot.img`，并检查整镜像、type-1
++fragment 和 DTB 哈希。不要手工复制或复用其他 release 的 244 个内核模块。
++
+ ## 7. 为什么不能直接使用普通 vendorbootimage
+ 
+ rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeFox `vendorbootimage` 生成的是 recovery 中间布局，直接刷入可能导致 Recovery 可启动但 Android 无法启动。
+@@ -171,6 +261,13 @@ rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeF
+ 3. stock DTB、header 参数和 cmdline。
+ 4. 64 MiB AVB hash footer。
+ 
++type-1 还保留 stock MediaTek AIDL BootControl binary。它的 device VINTF fragment
++必须位于 `/vendor/etc/vintf/manifest`，不能留在 `/system/etc/vintf/manifest`；后者会被
++`hwservicemanager` 当作 framework fragment 解析，导致 Keystore2 无法注册。Recovery 用本设备 init rc 启动该服务并 preload libc++ compatibility shim；不能
++删除它后只依赖旧 HIDL fallback，否则某些 ROM updater 的 `bootctl set-active-boot-slot`
++会错误返回失败。`BoardConfig.mk` 中的 `OF_USE_AIDL_BOOT_CONTROL := 1` 还会让
++OrangeFox 自身的 slot selector 使用同一个 AIDL 服务。
++
+ `build-lowmem.sh` 会在 OrangeFox 编译成功后自动执行 `tools/build-system-compatible-vendor-boot.sh`。不要绕过该步骤。
+ 
+ ## 8. 构建前预检
+@@ -206,6 +303,33 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
+   device/xiaomi/rodin/build-lowmem.sh vendorbootimage
+ ```
+ 
++Global OS3.0.301.0.WOJMIXM 使用：
++
++```bash
++RODIN_FIRMWARE_VARIANT=global OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
++  device/xiaomi/rodin/build-lowmem.sh vendorbootimage
++```
++
++每次成功构建都会生成同一固件 profile 的标准镜像和 `disable-avb` 变体：
++
++```text
++# CN OS3.0.303.0.WOJCNXM
++OrangeFox-R12.0-Unofficial-rodin-system-compatible.img
++OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img
++
++# Global OS3.0.301.0.WOJMIXM
++OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img
++OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img
++```
++
++`disable-avb` 会以 vendor bootconfig 覆盖 Android 可见的 locked/verified boot 属性，
++并删除 type-1 platform first-stage fstab 中的 `avb`、`avb=*`、`avb_keys=*` fs_mgr flags；
++vendor_boot 仍保留有效 AVB hash footer。它不会解锁 Bootloader 或改变 Boot ROM/LK 的
++验签策略。正常设备应使用标准镜像，只有 LK 已允许刷写但 Android 错误报告 locked，或需
++跳过 Android first-stage 挂载校验时才使用对应基线的该变体。详细属性和限制见
++[COMPATIBILITY_CN.md](COMPATIBILITY_CN.md#2-disable-avb-变体)。
++```
++
+ 低内存机器可以把 `OF_BUILD_JOBS` 降到 `1` 或 `2`。构建过程中不要清理 `/tmp`，也不要删除 `out/target/product/rodin/recovery`。
+ 
+ 成功后只使用：
+@@ -214,6 +338,12 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
+ out/target/product/rodin/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img
+ ```
+ 
++Global profile 的命名成品为：
++
++```text
++out/target/product/rodin/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img
++```
++
+ 不要刷生成过程中的：
+ 
+ - `vendor_ramdisk_recovery.cpio`
+@@ -257,7 +387,8 @@ file "$VERIFY/vendor_ramdisk00" "$VERIFY/vendor_ramdisk01"
+ - `vendor_ramdisk01`：type-2，name=`recovery`，最多 7 个补充模块。
+ - 两者都是 LZ4 legacy。
+ - combined vendor ramdisk 小于 60,000,000 字节。
+-- platform fragment 的 `/system/etc/vintf/manifest` 下没有 recovery device manifest。
++- platform fragment 的 `/system/etc/vintf/manifest` 下没有 `type="device"` VINTF fragment。
++- `android.hardware.boot-service.mtk.xml` 位于 `/vendor/etc/vintf/manifest`。
+ 
+ ## 11. 安全刷写与回退
+ 
+diff --git a/docs/COMPATIBILITY_CN.md b/docs/COMPATIBILITY_CN.md
+index ec807e7..fc0bea6 100644
+--- a/docs/COMPATIBILITY_CN.md
++++ b/docs/COMPATIBILITY_CN.md
+@@ -26,7 +26,26 @@ rodin-OrangeFox-OS3.0.303.0-WOJCNXM-dual-touch-test.img
+ 
+ 界面中显示的“3.0.303”不足以确认兼容性，必须比较完整 vendor fingerprint、kernel ABI 和触摸控制器。
+ 
+-## 2. 为什么 3.0.4.0 不能直接使用
++## 2. disable-avb 变体
++
++每个固件基线会同时生成标准镜像和 `disable-avb` 镜像。例如 CN 基线为：
++
++```text
++OrangeFox-R12.0-Unofficial-rodin-system-compatible.img
++OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img
++```
++
++后者保留相同的 DTB、type-2 recovery fragment、64 MiB 分区大小和重新计算的 vendor_boot AVB hash footer。它会修改 type-1 platform fragment 中供正常 Android 启动使用的 first-stage `fstab.*`：删除 fs_mgr flags 字段中的 `avb`、`avb=*` 和 `avb_keys=*`，保留所有分区路径、`slotselect`、`logical`、`first_stage_mount` 及其他挂载参数。它还向 vendor bootconfig 添加以下覆盖项：
++
++```text
++androidboot.vbmeta.device_state := "unlocked"
++androidboot.verifiedbootstate := "orange"
++androidboot.flash.locked := "0"
++```
++
++该变体用于 LK 已允许 fastboot 刷写、但 Android 仍收到 locked boot 属性，或需跳过 Android first-stage `fs_mgr` 对逻辑分区的 AVB 挂载校验的设备。它不会解锁 Bootloader，也不会改变 Boot ROM 或 LK 的验签与回滚策略；vendor_boot 自身仍保留有效的 AVB hash footer。应先保留标准镜像，并仅在确认需要上述绕过时刷入对应固件基线的 `disable-avb` 镜像。
++
++## 3. 为什么 3.0.4.0 不能直接使用
+ 
+ 最终 IMG 内置了 303 固件的以下内容：
+ 
+@@ -40,7 +59,7 @@ rodin-OrangeFox-OS3.0.303.0-WOJCNXM-dual-touch-test.img
+ 
+ 要支持 `3.0.4.0`，应从该版本重新提取一整套输入并生成独立镜像，不能只替换版本字符串或单个 `vendor_boot`。
+ 
+-## 3. 同为 303 但没有触摸
++## 4. 同为 303 但没有触摸
+ 
+ 已从 303 `vendor_dlkm` 确认 rodin 同时提供两套触摸驱动：
+ 
+@@ -73,7 +92,7 @@ adb shell su -c \
+ 
+ 若 driver/input/probe 显示 FocalTech，应核对最终 IMG 来自通过 preflight 的完整设备树，并收集 Recovery 中的 module probe、input 和 TouchReport 日志。新源码产物完成触摸、FBE、系统重启验证前不要作为稳定版发布。
+ 
+-## 4. “自动进入官方 Recovery”的排查顺序
++## 5. “自动进入官方 Recovery”的排查顺序
+ 
+ 1. 确认对方 Bootloader 确实已解锁，而不只是能进入 fastboot。
+ 2. 核对对方收到的 IMG SHA-256，排除传输或重命名错误。
+@@ -84,7 +103,7 @@ adb shell su -c \
+ 
+ 不要让测试者同时刷两个槽位，也不要让其刷 `vendor_ramdisk_recovery.cpio` 或 recovery-only 中间镜像。
+ 
+-## 5. 收集兼容性报告
++## 6. 收集兼容性报告
+ 
+ 设备处于 OrangeFox/TWRP 且有 ADB 时，在主机源码根目录执行：
+ 
+@@ -102,7 +121,7 @@ device/xiaomi/rodin/tools/collect-compat-report.sh \
+ 
+ 脚本只执行读取操作，不解密 `/data`、不修改分区、不刷机。报告可能包含序列号、fingerprint 和日志，公开上传前应检查隐私信息。
+ 
+-## 6. 为新固件制作版本
++## 7. 为新固件制作版本
+ 
+ 至少收集以下同一槽位、同一 OTA 版本的输入：
+ 
+diff --git a/desired/docs/DEVICE_TREE_PATCHES_CN.md b/docs/DEVICE_TREE_PATCHES_CN.md
+new file mode 100644
+index 0000000..ec69e8b
+--- /dev/null
 +++ b/docs/DEVICE_TREE_PATCHES_CN.md
-@@ -10,6 +10,10 @@
- - `recovery/root/init.recovery.keymint.rc`：为 OMAPI bridge 设置 vendor/system 运行时库搜索路径和 libc++ compatibility preload；在 `tee-supplicant` 就绪后并行启动 KeyMint、secure-element 与 NXP Weaver，不再以 bridge ready 属性阻塞 Weaver。
- - `BoardConfig.mk`、`recovery/root/init.recovery.bootctl.rc` 与 post-build repacker：OrangeFox 和 ROM updater 均使用 stock MediaTek AIDL BootControl；重打包器保留 binary，并将其 device VINTF fragment 放到 `/vendor/etc/vintf/manifest`，避免 `/system` framework VINTF 解析失败而使 Keystore2 崩溃。recovery rc 通过 compatibility shim 启动该服务，避免旧 HIDL fallback 的 UFS boot-region ioctl 使 slot 切换失败。
- - `tools/build-system-compatible-vendor-boot.sh`：增加 `RODIN_FIRMWARE_VARIANT=cn|global`，使最终镜像保留与目标系统相匹配的 type-1 platform ramdisk。
-+- `BoardConfig.mk`：Global profile 启用 `TW_NO_SCREEN_BLANK`。其 6.6.89 MTK DRM 在
-+  Recovery 的 atomic CRTC disable/enable 后可能保持黑屏，而 `panel1-backlight/brightness`
-+  已实测可读写；该开关保留锁屏与超时，仅以亮度归零和恢复代替 DRM CRTC blank。CN 保持原行为。
+@@ -0,0 +1,136 @@
++# rodin 设备树补丁说明
++
++## 范围
++
++`patches/rodin-fbe-global.patch` 是针对本仓库初始 rodin 设备树快照的文本补丁。它补齐了 FBE 所需的 recovery 依赖和 Global 固件构建 profile；不替换 OrangeFox 共享源码 patch，也不携带任何 firmware blob。
++
++补丁涉及：
++
++- `Android.bp`：将 Android 15 vendor 的 secure-element 与 OMAPI NDK 预编译库改为 recovery 专用模块名，保留 Android 16 构建图中的 AIDL 生成头文件，并让 `rodin_omapi_bridge` 显式链接 `librodin_libcxx_compat`。
++- `recovery/root/init.recovery.keymint.rc`：为 OMAPI bridge 设置 vendor/system 运行时库搜索路径和 libc++ compatibility preload；在 `tee-supplicant` 就绪后并行启动 KeyMint、secure-element 与 NXP Weaver，不再以 bridge ready 属性阻塞 Weaver。
++- `BoardConfig.mk`、`recovery/root/init.recovery.bootctl.rc` 与 post-build repacker：OrangeFox 和 ROM updater 均使用 stock MediaTek AIDL BootControl；重打包器保留 binary，并将其 device VINTF fragment 放到 `/vendor/etc/vintf/manifest`，避免 `/system` framework VINTF 解析失败而使 Keystore2 崩溃。recovery rc 通过 compatibility shim 启动该服务，避免旧 HIDL fallback 的 UFS boot-region ioctl 使 slot 切换失败。
++- `tools/build-system-compatible-vendor-boot.sh`：增加 `RODIN_FIRMWARE_VARIANT=cn|global`，使最终镜像保留与目标系统相匹配的 type-1 platform ramdisk。
++- `BoardConfig.mk`、`patches/orangefox-vendor-twrp.patch` 与共享 Recovery patch：CN 保持原有
++  atomic DRM 的完整 teardown/rebuild；Global 保留相同的 blanktimer/锁屏状态机，但首次完整 setup
++  后只对 CRTC 提交 `ACTIVE=0/1`，不撤销 connector、mode 或 plane binding。该编译开关经
++  `vendor/twrp` Soong 显式传给 `libminuitwrp`；仅在 Recovery 退出时完整 teardown 后释放
++  mode/FB 资源，`TW_NO_SCREEN_BLANK` 仍禁止使用。
 +- `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，先拉取 Git LFS blob，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。
- - 构建前检查、文件哈希清单和构建文档。
- 
- 这份补丁解决三个已定位的问题：原先 Soong 会把设备树中 Android 15 预编译 NDK 库与 Android 16 AIDL 生成模块混淆，导致 recovery 依赖解析失败；运行时的 bridge 则因找不到 `/vendor/lib64` 内的 NDK 库而无法启动，使 Weaver 被错误的 ready gate 无限阻塞；旧 HIDL BootControl fallback 在 rodin 上会使 UFS boot-region 设置失败并导致 slot 切换失败。它们分别影响可编译性、FBE synthetic-password 流程和 Virtual A/B ROM 更新后的 slot 处理。
-@@ -34,6 +38,35 @@ FBE 已解密后的 `userdata` mapper 与动态分区不是同一类对象，不
- 删除 `/dev/block/mapper/userdata`。命令失败或节点在最多一秒后仍存在时会终止格式化，
- 不会继续向仍被映射占用的物理 userdata 块设备执行 `make_f2fs`。
- 
++- 构建前检查、文件哈希清单和构建文档。
++
++这份补丁解决三个已定位的问题：原先 Soong 会把设备树中 Android 15 预编译 NDK 库与 Android 16 AIDL 生成模块混淆，导致 recovery 依赖解析失败；运行时的 bridge 则因找不到 `/vendor/lib64` 内的 NDK 库而无法启动，使 Weaver 被错误的 ready gate 无限阻塞；旧 HIDL BootControl fallback 在 rodin 上会使 UFS boot-region 设置失败并导致 slot 切换失败。它们分别影响可编译性、FBE synthetic-password 流程和 Virtual A/B ROM 更新后的 slot 处理。
++
++## OrangeFox 共享 Recovery patch
++
++`patches/orangefox-recovery.patch` 由 `tools/apply-orangefox-patches.sh` 应用于 pinned
++`bootable/recovery`。其中的 Virtual A/B 修复保留第一轮对当前槽位
++`system_a`、`vendor_a` 等逻辑分区和 `-cow` 的精确清理；仅在后续兜底扫描中跳过
++`Super_Partition_List` 中的无槽位 mapper alias，例如
++`/dev/block/mapper/vendor -> vendor_a`。
++
++这些 alias 由 Recovery 的 image-flashing 兼容逻辑建立，不是第二个可删除的逻辑分区。
++因此修复不会关闭 `Check_Pending_Merges()`，也不会绕过 Virtual A/B 的 snapshot merge
++安全检查。构建后若 Format Data 日志出现
++`skipping logical partition alias: vendor`，说明已命中该保护；若仍出现
++`removing dynamic partition: vendor`，刷入的仍是旧镜像或共享 patch 未应用。
++
++FBE 已解密后的 `userdata` mapper 与动态分区不是同一类对象，不能由
++`Unmap_Super_Devices()` 的兜底扫描删除。rodin 在 `BoardConfig.mk` 启用
++`OF_USE_DMCTL := 1`，将 `dmctl` 放入 Recovery；共享 patch 只在确认格式化 `/data` 时
++删除 `/dev/block/mapper/userdata`。命令失败或节点在最多一秒后仍存在时会终止格式化，
++不会继续向仍被映射占用的物理 userdata 块设备执行 `make_f2fs`。
++
 +共享 patch 还实现了 rodin 单 Type-C 口的 USB OTG 状态机。此机型在 host 尚未被请求时
 +不会打开 `otg_enable` 供电，因此不能以自动 Type-C source/partner 检测作为入口。用户在
 +“挂载”页点 USB 浮动按钮后，状态机先把 `typec/port0/preferred_role` 设为 `source`，再将
@@ -621,13 +1696,47 @@ index d1a855d..d634f27 100644
 +fragment 并验证该库以 `7f 45 4c 46` 开头。检查失败时不会替换最终的
 +`*-system-compatible.img`。
 +
- ## 应用
- 
- 先保存完整设备树和现有工作，再在 OrangeFox 源码根目录执行。补丁文件必须在目标设备树外部，因为应用前目标树中尚不存在该文件。
-@@ -75,6 +108,15 @@ device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
- | type-1 fragment SHA-256 | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
- | DTB SHA-256 | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
- 
++## 应用
++
++先保存完整设备树和现有工作，再在 OrangeFox 源码根目录执行。补丁文件必须在目标设备树外部，因为应用前目标树中尚不存在该文件。
++
++```bash
++PATCH=/path/to/rodin-fbe-global.patch
++patch -d device/xiaomi/rodin -p1 --dry-run < "$PATCH"
++patch -d device/xiaomi/rodin -p1 < "$PATCH"
++```
++
++只对与本项目初始快照相同的设备树直接应用。若 `--dry-run` 有上下文冲突，不要使用 `.rej` 继续构建；先按各文件的功能块人工 rebase，并重新运行完整预检。
++
++应用后仍按常规方式执行：
++
++```bash
++device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
++```
++
++该脚本继续负责 `build/make`、`vendor/twrp` 和 `bootable/recovery` 的三个 Git patch；`rodin-fbe-global.patch` 只修改设备树，不能由该脚本对非 Git 设备目录自动应用。
++
++## Global 固件输入
++
++Global OS3.0.301.0.WOJMIXM 的 244 个 type-1 platform 内核模块与 CN OS3.0.303.0.WOJCNXM 不同。两者 DTB、fstab、first-stage init、SELinux 数据和 type-2 stock recovery fragment 相同，但 type-1 fragment 不能交叉使用。
++
++补丁不包含 29,235,080 字节的 `prebuilt/global/vendor_ramdisk00`。从完整 Global 固件包导入：
++
++```bash
++device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
++  /path/to/rodin_global_images_OS3.0.301.0.WOJMIXM_16.0/images/vendor_boot.img
++```
++
++导入器固定校验以下值，失败时不会覆盖现有输入：
++
++| 项目 | 值 |
++| --- | --- |
++| Global `vendor_boot.img` 大小 | `67108864` |
++| Global `vendor_boot.img` SHA-256 | `72b8ae7637af1924de8312855790de91f99abbc9c8c8ab6003ddce14abc4d956` |
++| type-1 fragment 大小 | `29235080` |
++| type-1 fragment SHA-256 | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
++| DTB SHA-256 | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
++
 +`prebuilt/global/modules/` 的七个 6.6.89 Recovery-only 模块通过 Git LFS 保存。文本 patch
 +只包含它们的 LFS pointer，不包含模块字节；推送设备树前必须把实际模块一并加入并上传 LFS，
 +否则 GitHub Actions 的 `git lfs pull` 无法取得 Global 构建输入：
@@ -637,65 +1746,136 @@ index d1a855d..d634f27 100644
 +git lfs status
 +```
 +
- 然后使用：
- 
- ```bash
-@@ -89,4 +131,4 @@ RODIN_FIRMWARE_VARIANT=global \
-   device/xiaomi/rodin/tools/verify-build-inputs.sh "$PWD"
- ```
- 
--Global 输出为 `OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img`，不能用于 CN；默认 CN 输出也不能用于 Global。
++然后使用：
++
++```bash
++RODIN_FIRMWARE_VARIANT=global OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
++  device/xiaomi/rodin/build-lowmem.sh vendorbootimage
++```
++
++CN 3.0.303 默认不设置 `RODIN_FIRMWARE_VARIANT`。两个 profile 都必须先通过：
++
++```bash
++RODIN_FIRMWARE_VARIANT=global \
++  device/xiaomi/rodin/tools/verify-build-inputs.sh "$PWD"
++```
++
 +Global 输出为 `OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img`，不能用于 CN；默认 CN 输出也不能用于 Global。repacker 会将最终 Recovery fragment 中的 7 个 ABI 相关模块与由 Global 输入和固定偏移 patch 生成的预期内容逐字节比较；若复用了 CN 的 recovery fragment，构建会停止而不会输出 Global 成品。
 diff --git a/docs/TROUBLESHOOTING_CN.md b/docs/TROUBLESHOOTING_CN.md
-index 1181488..a3f17d1 100644
+index c3bc639..9d0bb66 100644
 --- a/docs/TROUBLESHOOTING_CN.md
 +++ b/docs/TROUBLESHOOTING_CN.md
-@@ -135,7 +135,30 @@ adb shell 'file /twres/fonts/MiSans.ttf'
+@@ -135,10 +135,51 @@ adb shell 'file /twres/fonts/MiSans.ttf'
  -DOF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT=1
  ```
  
 -## 10. Recovery 正常但系统无法启动
-+## 10. Global 按电源后无法亮屏
++## 10. Global 锁屏后屏幕仍亮或无法唤醒
 +
-+若短按电源后屏幕熄灭、再次短按仍黑屏，但 `init.svc.recovery=running`，则不是
-+OrangeFox 进程崩溃。Global 6.6.89 的 MTK DRM 可接受 atomic CRTC blank，却可能无法在
-+对应 enable commit 后恢复面板。
++Global 仍使用标准的 `blanktimer -> gr_fb_blank() -> atomic DRM` 链路，不使用亮度归零
++workaround。它只在完成首次完整 atomic setup 后，将后续锁屏/唤醒提交缩小为 CRTC
++`ACTIVE=0/1`，保留 connector、mode 和 plane binding；这修复的是 Global stock 6.6.89 的
++完整 teardown/rebuild 后无法恢复面板的问题，而非绕开锁屏链路。
++Recovery 退出时则会先完整 teardown，再释放 mode blob 和 framebuffer，避免仍被 DRM 状态
++引用的资源被提前释放。
 +
-+当前 Global profile 通过 `TW_NO_SCREEN_BLANK` 避开该路径：锁屏 overlay、屏幕超时和
-+用户保存的亮度设置都保留；Recovery 仅向已验证的
-+`/sys/devices/virtual/backlight/panel1-backlight/brightness` 写入 `0`，唤醒时恢复先前亮度。
-+CN 不应用这个 workaround。刷入新 Global 镜像后，应连续短按电源两次验证黑屏和亮屏均正常。
++不要定义 `TW_NO_SCREEN_BLANK`：它会跳过 CRTC blank，并移除“屏幕关闭时普通输入不应唤醒”的
++保护，导致日志中出现 `brightness=0` 后立即恢复 `brightness=1000`，表现为已锁屏但屏幕仍亮。
 +
-+本问题的日志运行在 `6.6.139-EVONIX`，而 Global 构建输入固定为 stock
-+`6.6.89`。此 workaround 不替换内核或模块，只避免 DRM CRTC 状态转换；其他异常不能据此
-+视为已适配第三方内核，仍应在匹配的 stock Global 固件上回归触摸、FBE、OTG 和正常系统启动。
++先在与镜像匹配的 stock 固件上测试。`6.6.139-EVONIX-COS-V3.0` 等第三方内核不能用于判断
++Global `6.6.89` 输入的显示兼容性。新的 Recovery 会在真实 atomic commit 处记录请求方向、
++connector/CRTC/plane 标识及返回值；锁屏和唤醒各应出现一行
++`DRM blank retained pipeline: ACTIVE=0` 或 `ACTIVE=1`，随后为成功 commit。若 stock Global
++仍无法唤醒，保留这组日志再修正 atomic 属性，不能重新启用亮度替代路径。
 +
-+若新镜像仍复现，先在黑屏且 ADB 仍在线时保存以下只读证据，不要强制重启后覆盖日志：
++从 ADB 进行一次可重复验证，再用物理电源键重复一次：
 +
 +```bash
-+adb shell 'getprop init.svc.recovery; cat /sys/devices/virtual/backlight/panel1-backlight/brightness'
++adb shell input keyevent 26
++sleep 2
++adb shell input keyevent 26
 +adb pull /tmp/recovery.log logs/global-screen-wake-recovery.log
 +adb shell dmesg > logs/global-screen-wake-dmesg.txt
++adb logcat -b kernel -d > logs/global-screen-wake-kernel.log
 +```
 +
 +## 11. Recovery 正常但系统无法启动
  
  必须确认最终刷入的是 `OrangeFox-...-system-compatible.img`。正常 Android boot 只选择 type-1 platform fragment；它必须保留 stock first-stage init、linker、libc、fstab、SELinux、firmware 和全部 244 个模块。
  
-@@ -160,7 +183,7 @@ fastboot reboot
++若 pstore 中出现下列组合：
++
++```text
++device-mapper: verity: ... metadata block ... is corrupted
++reboot: Restarting system with command 'dm-verity device corrupted'
++```
++
++则故障位于当前槽位的 `/system`/super 完整性校验，不是 `/data` 格式化，也不是 Recovery
++进程崩溃。此时 `make_f2fs` 的失败不会写入 userdata，更不会损坏 system。使用与当前地区、
++版本和槽位匹配的完整官方 fastboot 包修复 system/super 与相应 vbmeta；不要在 Recovery 中
++关闭或绕过 dm-verity。
++
+ 立即回退：
+ 
+ ```bash
+@@ -148,7 +189,60 @@ fastboot reboot
  
  不要在未确认原因前刷另一槽位。
  
--## 11. 刷 ROM 后无法 Format Data / `Unable to unmap dynamic partitions`
+-## 11. 最小日志包
 +## 12. 刷 ROM 后无法 Format Data / `Unable to unmap dynamic partitions`
- 
- 先区分是否在同一 Recovery 会话内操作。Virtual A/B ROM 更新完后，OrangeFox 会提示：
- 
-@@ -213,7 +236,7 @@ stock AIDL BootControl 的新构建；旧 HIDL fallback 会在 rodin 上把 UFS
- ioctl 失败报告为 slot 切换失败。不要通过手工删除 mapper 节点或强制擦写 `super` 来
- 绕过该错误。
- 
--## 12. 最小日志包
++
++先区分是否在同一 Recovery 会话内操作。Virtual A/B ROM 更新完后，OrangeFox 会提示：
++
++```text
++Devices on super may not mount until after rebooting recovery.
++To flash additional zips, please reboot recovery to switch to the updated slot.
++```
++
++收到这条提示后不要立即 Format Data。先重启到 Recovery，确认新会话中的
++`ro.boot.slot_suffix`，再执行格式化。当前日志中 `Unable to unmap dynamic
++partitions` 发生在 `Check_Pending_Merges()` 内、真正擦除 `/data` 之前。
++
++本设备树的当前 `orangefox-recovery.patch` 会在精确清理当前槽位
++`vendor_a` 等分区后，跳过 `vendor`、`system` 等无槽位 mapper alias。
++正常日志应出现 `skipping logical partition alias: vendor`，随后才是
++`checking for merges` 和实际的 Data wipe。若仍出现
++`removing dynamic partition: vendor` 后立刻报错，说明运行的是未应用此 patch 的旧镜像。
++
++### `make_f2fs: Error: In use by the system`
++
++这与 `Unable to unmap dynamic partitions` 不同：若日志已出现 `checking for merges`，
++随后显示物理 `/data` 设备（rodin 常为 `/dev/block/sdc92`）的 `make_f2fs` 被占用，说明
++FBE 解密创建的 `/dev/block/mapper/userdata` 仍持有该物理设备。
++
++当前构建在 `make_f2fs` 前必须显示：
++
++```text
++OrangeFox: running dmctl before formatting...
++```
++
++随后才可以继续格式化。没有这行说明仍在运行旧镜像，或 `OF_USE_DMCTL := 1` 未进入构建。
++若出现 `Unable to release decrypted userdata` 或 `Decrypted userdata is still busy`，Recovery
++会安全中止；保存该次 `/tmp/recovery.log`，不要手工删除 `/dev/block/mapper` 节点，也不要
++擦写 `super` 来规避。
++
++如果已经重启 Recovery 后仍失败，必须采集那一次失败的完整日志；不要复用刷包前的
++日志。连接 ADB 后执行：
++
++```bash
++adb shell getprop ro.boot.slot_suffix
++adb shell /system/bin/bootctl get-current-slot
++adb shell /system/bin/bootctl get-active-boot-slot
++adb shell 'ls -l /dev/block/mapper; cat /proc/mounts | grep -E "dm-|/system|/vendor"'
++adb pull /tmp/recovery.log logs/recovery-after-reboot.log
++adb logcat -b all -d > logs/logcat-after-reboot.txt
++```
++
++若日志同时出现 `bootctl set-active-boot-slot` 返回 `Operation failed`，使用保留
++stock AIDL BootControl 的新构建；旧 HIDL fallback 会在 rodin 上把 UFS boot-region
++ioctl 失败报告为 slot 切换失败。不要通过手工删除 mapper 节点或强制擦写 `super` 来
++绕过该错误。
++
 +## 13. 最小日志包
  
  ```bash
@@ -733,16 +1913,58 @@ index e13a0b2..8e7fa3b 100644
  # The system-compatible image preserves the stock platform fragment's
  # first-stage runtime and modules while pruning its duplicate recovery
  # userspace. Recovery therefore only needs modules that are absent from stock
+diff --git a/manifests/README_CN.md b/manifests/README_CN.md
+index 9b2c9c5..df6f766 100644
+--- a/manifests/README_CN.md
++++ b/manifests/README_CN.md
+@@ -18,17 +18,10 @@ device/xiaomi/rodin
+ - `manifests/device-blobs.sha256`：全部设备 blob 的 SHA-256 清单。
+ - 根目录的 `BoardConfig.mk`、`device.mk`、产品 mk、callback 和构建脚本。
+ 
+-`manifests/orangefox-fox_14.1-pinned.xml` 是当前 660 个 repo 项目的精确 revision 记录，SHA-256 为：
++`manifests/orangefox-fox_14.1-pinned.xml` 是当前 662 个 repo 项目的精确 revision 记录，其中包括 OrangeFox `vendor/recovery` 和 `external/se_omapi`，SHA-256 为：
+ 
+ ```text
+-c34315d68bdcc526fc69f4f895920d8037389bcb357ba6f3cdfcea3c247c81ce
+-```
+-
+-OrangeFox vendor tree 不在 repo manifest 中，当前来源是：
+-
+-```text
+-https://gitlab.com/OrangeFox/vendor/recovery.git
+-0d7959e6538db5ddfff892cf7dfe207c68b0b753
++7262c93f87eaecaa11e6cfde06a7be22b4bb81697d94e74c8c01500ab90a3f60
+ ```
+ 
+ ## 不需要保留
+@@ -57,7 +50,7 @@ sha256sum /安全位置/rodin-device-tree-*.tar.zst
+ 
+ ## 下次恢复构建
+ 
+-同步 OrangeFox 14.1 并克隆 vendor tree 后，在新源码根目录解压：
++按 pinned manifest 同步 OrangeFox 14.1（其中已包含 vendor/OMAPI tree）后，在新源码根目录解压：
+ 
+ ```bash
+ tar --zstd -xpf /安全位置/rodin-device-tree-YYYY-MM-DD.tar.zst
+@@ -65,7 +58,7 @@ tar --zstd -xpf /安全位置/rodin-device-tree-YYYY-MM-DD.tar.zst
+ device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
+ ```
+ 
+-应用脚本会自动执行 `verify-build-inputs.sh`，包括 pinned manifest 中全部 660 个源码 revision、独立 vendor tree 和 FocalTech 完整资源链检查。也可以在编译前再次单独运行预检。
++应用脚本会自动执行 `verify-build-inputs.sh`，包括 pinned manifest 中全部 662 个源码 revision、OrangeFox vendor/OMAPI tree 和 FocalTech 完整资源链检查。也可以在编译前再次单独运行预检。
+ 
+ 然后手动构建：
+ 
 diff --git a/manifests/device-blobs.sha256 b/manifests/device-blobs.sha256
-index 97eaea0..22eb752 100644
+index 21642f2..22eb752 100644
 --- a/manifests/device-blobs.sha256
 +++ b/manifests/device-blobs.sha256
-@@ -1,7 +1,14 @@
--f94704417db22027b33b72129b3434f690cb436a79b992a105cdf5a6107ce498  device/xiaomi/rodin/prebuilt/README.md
+@@ -1,6 +1,14 @@
+-a91ad5f5c68b208c18c73b4672ccf26166832ba9636611cbe469c6e8ebdda5b7  device/xiaomi/rodin/prebuilt/README.md
 +bae7f49afba2b00e1f3fbc2744ab9de41ac85d0153fd341fbadae5d8f9e2afc2  device/xiaomi/rodin/prebuilt/README.md
  38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae  device/xiaomi/rodin/prebuilt/dtb/mt6899-rodin.dtb
  ccd008dc7336301b7cc6fab7b59400b3debd2866f055f085e61696dbc7c0f298  device/xiaomi/rodin/prebuilt/dtbo.img
- 349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731  device/xiaomi/rodin/prebuilt/global/vendor_ramdisk00
++349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731  device/xiaomi/rodin/prebuilt/global/vendor_ramdisk00
 +87c41bce1aa64d855b685c5105ed177fe499968d44b802b48d7bd620697fe9da  device/xiaomi/rodin/prebuilt/global/modules/focaltech_touch_rodin.ko
 +c0e54ace6d081d949db7b900b0f10f890b7bf9e5eb763878f3c6874b806178d7  device/xiaomi/rodin/prebuilt/global/modules/goodix_core_rodin.ko
 +8a8ebd267c2715d3efd9dea4da79a63dcc061ff3a0edbdd14a52d947b4b3d7be  device/xiaomi/rodin/prebuilt/global/modules/nxp_i2c.ko
@@ -753,8 +1975,56 @@ index 97eaea0..22eb752 100644
  55caa83bf1dd1ab5e34521f1faa18532a6110a065123577a1a62d80ee5178569  device/xiaomi/rodin/prebuilt/kernel
  499bb470719b790baf90f8b49a0340e09b7ed983f3508736a86a6d1e9b503f47  device/xiaomi/rodin/prebuilt/vendor_boot_stock.img
  192977d50a121f7a5ddfab0212488ef0dbb0326cad802ce9d664649967a9845c  device/xiaomi/rodin/prebuilt/vendor_ramdisk00
+@@ -57,9 +65,10 @@ f09ae22ec8581cc93b1f237dc1c09f2bd30885d53dfc5ce512f8011c6efef6e2  device/xiaomi/
+ 5d9ef0e9dcd65263cce057be51f80b8683320ffc4227fbff9d9cef2c675e981b  device/xiaomi/rodin/proprietary/vendor/mitee/ta/dba51a17-0563-11e7-93b16fa7b0071a51.ta
+ 42a2e3c5f6c6da2e58990581afe935fc62f704812d12aafd8657fac4c8697629  device/xiaomi/rodin/recovery/root/first_stage_ramdisk/fstab.emmc
+ 62fefc24427bac964dfa6e92566f20051842d177f2abb072439ec3e072551810  device/xiaomi/rodin/recovery/root/first_stage_ramdisk/fstab.mt6899
++9db4c6260eae00d7fe92c3d5d3db1764f62e3498e4c6b4e020c621d8dc8b752d  device/xiaomi/rodin/recovery/root/init.recovery.bootctl.rc
+ c0bc22a0c7158cb92f9720f7d74f7e38861d98e7dac4c726e70da302f2a195c8  device/xiaomi/rodin/recovery/root/init.recovery.hardware.rc
+-13cf7c84489e73e63288f1fe396098a2fba9c45349f6859694acfddc911f4aec  device/xiaomi/rodin/recovery/root/init.recovery.keymint.rc
+-0214fc6029af72c2c38e22cfbe5e64422d23096c317758ccf531cea4235fd1b5  device/xiaomi/rodin/recovery/root/init.recovery.mt6899.rc
++7a08e217122beb7c349b49df0985ecdbe98d1cada7f766c5fdb9961fee803ac3  device/xiaomi/rodin/recovery/root/init.recovery.keymint.rc
++5dbbf5b7f09369becd9a8fd39db521840f62563c95d6f0bca73cee4bfa28c85d  device/xiaomi/rodin/recovery/root/init.recovery.mt6899.rc
+ e9dde5655db30dcce1a8abf7a23c7db907790d791a625559a14257aad3323846  device/xiaomi/rodin/recovery/root/init.recovery.project.rc
+ 84ee9b33a5011c5837a20f25b2ba68af8c4a971707a3befb9d3d3642d0df170b  device/xiaomi/rodin/recovery/root/init.recovery.usb.rc
+ 216fcf14fdb61c43faa8ecedcd4b42cf96d8dc8fb2bb4c63f1db3af9a1516736  device/xiaomi/rodin/recovery/root/lib/modules/8250_mtk.ko
+@@ -325,7 +334,7 @@ cc5062290ee1f74f8da950ca9467625e0cd47fabbf6ba9027e7dc434a7c9b671  device/xiaomi/
+ 046bb6ada4a68049d9c3af58d7909a0d12496f4117ce88628d27e832b8e98610  device/xiaomi/rodin/recovery/root/system/etc/init/android.hardware.fastboot-service.example_recovery.rc
+ 62fefc24427bac964dfa6e92566f20051842d177f2abb072439ec3e072551810  device/xiaomi/rodin/recovery/root/system/etc/recovery.fstab
+ 3d7c39073503b41dd9c9cb777f67460768d845e6330bcda18ae0a52fb4ba3ad9  device/xiaomi/rodin/recovery/root/system/etc/task_profiles.json
+-295114ca38454013c4a85a0e11e688b1bada099727d4e034b372d8756389ef18  device/xiaomi/rodin/recovery/root/system/etc/twrp.flags
++fcd249c22c10e174a8fdac9cc1dc397b7354b18925a85b335eb6b87014d4995d  device/xiaomi/rodin/recovery/root/system/etc/twrp.flags
+ e75201e0a0d2be1a5a13371a010b749ac6d66fe5dc2742fa4a0d13876d5e4312  device/xiaomi/rodin/recovery/root/system/etc/ueventd.rc
+ d01d06cc43d3d6ef28f3bd4b2121967edb8bab0414e1cb7ffb5be9cb8525ee61  device/xiaomi/rodin/recovery/root/system/etc/vintf/manifest.xml
+ 3131029d0f2ee73c4dcb01429d0b8e46d8e1d3839216999dafa3eb6963441ddd  device/xiaomi/rodin/recovery/root/vendor/etc/ueventd.rc
+diff --git a/manifests/orangefox-fox_14.1-pinned.xml b/manifests/orangefox-fox_14.1-pinned.xml
+index f63df05..ace1e38 100644
+--- a/manifests/orangefox-fox_14.1-pinned.xml
++++ b/manifests/orangefox-fox_14.1-pinned.xml
+@@ -5,10 +5,11 @@
+   <remote name="aosp" fetch="https://android.googlesource.com" review="https://android-review.googlesource.com/"/>
+   <remote name="github" fetch="https://github.com"/>
+   <remote name="nebrassy" fetch="https://github.com/nebrassy"/>
++  <remote name="orangefox" fetch="https://gitlab.com/OrangeFox"/>
+   
+   <default remote="aosp" revision="refs/tags/android-14.0.0_r67" sync-j="4"/>
+   
+-  <project name="android_bootable_recovery" path="bootable/recovery" remote="nebrassy" revision="fd98f33a722bd0bd52034f170bb91e2862654d6b" upstream="android-14" dest-branch="android-14"/>
++  <project name="bootable/Recovery" path="bootable/recovery" remote="orangefox" revision="fd98f33a722bd0bd52034f170bb91e2862654d6b" upstream="fox_14.1" dest-branch="fox_14.1" clone-depth="50"/>
+   <project name="android_build" path="build/make" remote="nebrassy" revision="506df226dd003a364916b6b3ee1eb3bf9064f97f" upstream="android-14" dest-branch="android-14" groups="pdk">
+     <copyfile src="core/root.mk" dest="Makefile"/>
+     <linkfile src="CleanSpec.mk" dest="build/CleanSpec.mk"/>
+@@ -687,6 +688,8 @@
+   <project name="trusty/vendor/google/aosp" revision="2edf8eb162934c428ffcbda2dcd91696e0bc1777" upstream="refs/tags/android-14.0.0_r67" dest-branch="refs/tags/android-14.0.0_r67" groups="trusty">
+     <copyfile src="lk_inc.mk" dest="lk_inc.mk"/>
+   </project>
++  <project name="vendor/recovery" path="vendor/recovery" remote="orangefox" revision="0d7959e6538db5ddfff892cf7dfe207c68b0b753"/>
++  <project name="external/se_omapi" path="external/se_omapi" remote="orangefox" revision="9ea6e4a9ecfe04ffb82767d7cbcab3e8dc6295af"/>
+   
+   <superproject name="platform/superproject" revision="android-14.0.0_r67"/>
+   
 diff --git a/patches/orangefox-recovery.patch b/patches/orangefox-recovery.patch
-index 9fd5181..175953f 100644
+index d770f4e..869da6b 100644
 --- a/patches/orangefox-recovery.patch
 +++ b/patches/orangefox-recovery.patch
 @@ -1,3 +1,46 @@
@@ -866,28 +2136,355 @@ index 9fd5181..175953f 100644
  diff --git a/gui/theme/portrait_hdpi/resources/images.xml b/gui/theme/portrait_hdpi/resources/images.xml
  index 1d8dec09..cf763f95 100644
  --- a/gui/theme/portrait_hdpi/resources/images.xml
-@@ -639,7 +737,7 @@ index c437cc77..57b121af 100644
-  	#elif defined(FOX_USE_DMSETUP)
-  	if (TWFunc::Path_Exists("/dev/block/mapper/userdata")) {
- diff --git a/partitionmanager.cpp b/partitionmanager.cpp
--index 0ea3a125..e640d27b 100755
-+index 0ea3a125..e347aa7b 100755
- --- a/partitionmanager.cpp
- +++ b/partitionmanager.cpp
- @@ -25,7 +25,9 @@
-@@ -685,7 +783,7 @@ index 0ea3a125..e640d27b 100755
-  				}
-  			}
-  		}
--@@ -4916,45 +4930,134 @@ bool TWPartitionManager::Check_Pending_Merges() {
-+@@ -4916,45 +4930,272 @@ bool TWPartitionManager::Check_Pending_Merges() {
-  	return true;
+@@ -369,6 +467,187 @@ index 8e22b640..97a85fd9 100644
   }
   
-@@ -763,6 +861,69 @@ index 0ea3a125..e640d27b 100755
- +
- +	return false;
- +}
+  void gr_clip(int x, int y, int w, int h)
++diff --git a/minuitwrp/graphics_drm.cpp b/minuitwrp/graphics_drm.cpp
++index 0cc80f5c..95ae274a 100644
++--- a/minuitwrp/graphics_drm.cpp
+++++ b/minuitwrp/graphics_drm.cpp
++@@ -232,6 +232,9 @@ static drmModeConnector *main_monitor_connector;
++ static int drm_fd = -1;
++ 
++ static bool current_blank_state = true;
+++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
+++static bool drm_pipeline_configured = false;
+++#endif
++ static int fb_prop_id;
++ static struct Crtc crtc_res;
++ static struct Connector conn_res;
++@@ -554,7 +557,68 @@ static int teardown_pipeline(drmModeAtomicReqPtr atomic_req) {
++   return 0;
++ }
++ 
+++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
+++static void drm_shutdown_pipeline() {
+++  drmModeAtomicReqPtr atomic_req = drmModeAtomicAlloc();
+++  if (!atomic_req) {
+++    printf("DRM shutdown: atomic allocation failed\n");
+++    return;
+++  }
+++
+++  int ret = teardown_pipeline(atomic_req);
+++  int commit_errno = 0;
+++  if (!ret) {
+++    errno = 0;
+++    ret = drmModeAtomicCommit(drm_fd, atomic_req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+++    commit_errno = errno;
+++  }
+++  if (ret) {
+++    if (commit_errno == 0 && ret < 0)
+++      commit_errno = -ret;
+++    printf("DRM shutdown: teardown commit failed rc=%d errno=%d (%s)\n", ret, commit_errno,
+++           commit_errno ? strerror(commit_errno) : "unknown");
+++  } else {
+++    printf("DRM shutdown: pipeline torn down before resource release\n");
+++  }
+++
+++  drmModeAtomicFree(atomic_req);
+++}
+++#endif
+++
+++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
+++static int set_crtc_active(drmModeAtomicReqPtr atomic_req, uint64_t active) {
+++  uint32_t prop_id;
+++
+++  if (!main_monitor_crtc) {
+++    printf("DRM retained pipeline: main CRTC is unavailable\n");
+++    return -ENODEV;
+++  }
+++
+++  find_prop_id(&crtc_res, crtc, Crtc, main_monitor_crtc->crtc_id, "ACTIVE", prop_id);
+++  if (!prop_id) {
+++    printf("DRM retained pipeline: CRTC ACTIVE property is unavailable\n");
+++    return -ENOENT;
+++  }
+++
+++  const int ret = drmModeAtomicAddProperty(atomic_req, main_monitor_crtc->crtc_id, prop_id,
+++                                           active);
+++  if (ret < 0) {
+++    printf("DRM retained pipeline: failed to add ACTIVE=%u rc=%d\n",
+++           active ? 1 : 0, ret);
+++    return ret;
+++  }
+++
+++  return 0;
+++}
+++#endif
+++
++ static int drm_disable_crtc(drmModeAtomicReqPtr atomic_req) {
+++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
+++  if (drm_pipeline_configured) {
+++    printf("DRM blank retained pipeline: ACTIVE=0\n");
+++    return set_crtc_active(atomic_req, 0);
+++  }
+++#endif
++   return teardown_pipeline(atomic_req);
++ }
++ 
++@@ -586,14 +650,38 @@ static int setup_pipeline(drmModeAtomicReqPtr atomic_req) {
++ 
++ }
++ static int drm_enable_crtc(drmModeAtomicReqPtr atomic_req) {
+++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
+++  if (drm_pipeline_configured) {
+++    printf("DRM blank retained pipeline: ACTIVE=1\n");
+++    return set_crtc_active(atomic_req, 1);
+++  }
+++#endif
++   return setup_pipeline(atomic_req);
++ }
++ 
+++static void log_drm_blank_request(bool blank) {
+++  const uint32_t crtc_id = main_monitor_crtc ? main_monitor_crtc->crtc_id : 0;
+++  const uint32_t connector_id = main_monitor_connector ? main_monitor_connector->connector_id : 0;
+++  const uint32_t fb_id = drm_surfaces[current_buffer] ? drm_surfaces[current_buffer]->fb_id : 0;
+++
+++  printf("DRM blank request: blank=%d current=%d crtc=%u connector=%u fb=%u lms=%u\n",
+++         blank, current_blank_state, crtc_id, connector_id, fb_id, number_of_lms);
+++  for (uint32_t i = 0; i < number_of_lms && i < NUM_PLANES; ++i) {
+++    const uint32_t plane_id = plane_res[i].plane ? plane_res[i].plane->plane_id : 0;
+++    printf("DRM blank plane[%u]=%u\n", i, plane_id);
+++  }
+++}
+++
++ static void drm_blank(minui_backend* backend __unused, bool blank) {
++   int ret = 0;
+++  bool commit_attempted = false;
++ 
++-  if (blank == current_blank_state)
+++  if (blank == current_blank_state) {
+++    printf("DRM blank skipped: request=%d current=%d\n", blank, current_blank_state);
++     return;
+++  }
+++
+++  log_drm_blank_request(blank);
++ 
++   drmModeAtomicReqPtr atomic_req = drmModeAtomicAlloc();
++   if (!atomic_req) {
++@@ -606,14 +694,27 @@ static void drm_blank(minui_backend* backend __unused, bool blank) {
++   else
++     ret = drm_enable_crtc(atomic_req);
++ 
++-  if (!ret)
+++  if (ret) {
+++    printf("DRM blank setup failed: request=%d rc=%d\n", blank, ret);
+++  } else {
+++    errno = 0;
++     ret = drmModeAtomicCommit(drm_fd, atomic_req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+++    commit_attempted = true;
+++  }
++ 
++   if (!ret) {
++-    printf("Atomic Commit succeed");
++     current_blank_state = blank;
++-  } else {
++-    printf("Atomic Commit failed, rc = %d\n", ret);
+++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
+++    if (!blank)
+++      drm_pipeline_configured = true;
+++#endif
+++    printf("DRM blank commit succeeded: request=%d current=%d\n", blank, current_blank_state);
+++  } else if (commit_attempted) {
+++    int commit_errno = errno;
+++    if (commit_errno == 0 && ret < 0)
+++      commit_errno = -ret;
+++    printf("DRM blank commit failed: request=%d rc=%d errno=%d (%s)\n", blank, ret,
+++           commit_errno, commit_errno ? strerror(commit_errno) : "unknown");
++   }
++ 
++   drmModeAtomicFree(atomic_req);
++@@ -934,6 +1035,10 @@ static void update_plane_fb() {
++ static GRSurface* drm_init(minui_backend* backend __unused) {
++   drmModeRes* res = nullptr;
++ 
+++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
+++  drm_pipeline_configured = false;
+++#endif
+++
++   spr_enabled = android::base::GetIntProperty("vendor.display.enable_spr", 0);
++   /* Consider DRM devices in order. */
++   for (int i = 0; i < DRM_MAX_MINOR; i++) {
++@@ -1155,7 +1260,14 @@ static GRSurface* drm_flip(minui_backend* backend __unused) {
++ }
++ 
++ static void drm_exit(minui_backend* backend __unused) {
+++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
+++    // Blank/unblank retains the pipeline, but exit must detach it before its
+++    // mode blob and framebuffer objects are released.
+++    drm_shutdown_pipeline();
+++    drm_pipeline_configured = false;
+++#else
++     drm_blank(nullptr, true);
+++#endif
++     drmModeDestroyPropertyBlob(drm_fd, crtc_res.mode_blob_id);
++     drm_destroy_surface(drm_surfaces[0]);
++     drm_destroy_surface(drm_surfaces[1]);
+ diff --git a/minuitwrp/include/minuitwrp/truetype.hpp b/minuitwrp/include/minuitwrp/truetype.hpp
+ index 72b7620a..f096a230 100755
+ --- a/minuitwrp/include/minuitwrp/truetype.hpp
+@@ -606,6 +885,405 @@ index 1f02b296..efb82ecd 100644
+  # whether to wipe /metadata after formatting data
+  ifeq ($(OF_WIPE_METADATA_AFTER_DATAFORMAT),1)
+     ifeq ($(TW_INCLUDE_FBE_METADATA_DECRYPT),true)
++diff --git a/partition.cpp b/partition.cpp
++index c437cc77..57b121af 100644
++--- a/partition.cpp
+++++ b/partition.cpp
++@@ -2701,10 +2701,24 @@ bool TWPartition::Wipe_F2FS() {
++ 	#endif
++ 
++ 	#ifdef OF_USE_DMCTL
++-	if (TWFunc::Path_Exists("/dev/block/mapper/userdata")) {
+++	if (Mount_Point == "/data" && TWFunc::Path_Exists("/dev/block/mapper/userdata")) {
++ 		LOGINFO("OrangeFox: running dmctl before formatting...\n");
++-		TWFunc::Exec_Cmd("dmctl delete userdata", false);
++-		usleep(32768);
+++		if (TWFunc::Exec_Cmd("dmctl delete userdata", false) != 0) {
+++			LOGERR("Unable to remove decrypted userdata mapper; refusing to format %s.\n",
+++					Actual_Block_Device.c_str());
+++			gui_print("Unable to release decrypted userdata; format aborted.\n");
+++			return false;
+++		}
+++		for (unsigned int retry = 0; retry < 20 &&
+++				TWFunc::Path_Exists("/dev/block/mapper/userdata"); retry++) {
+++			usleep(50000);
+++		}
+++		if (TWFunc::Path_Exists("/dev/block/mapper/userdata")) {
+++			LOGERR("Decrypted userdata mapper is still present; refusing to format %s.\n",
+++					Actual_Block_Device.c_str());
+++			gui_print("Decrypted userdata is still busy; format aborted.\n");
+++			return false;
+++		}
++ 	}
++ 	#elif defined(FOX_USE_DMSETUP)
++ 	if (TWFunc::Path_Exists("/dev/block/mapper/userdata")) {
++diff --git a/partitionmanager.cpp b/partitionmanager.cpp
++index 0ea3a125..e347aa7b 100755
++--- a/partitionmanager.cpp
+++++ b/partitionmanager.cpp
++@@ -25,7 +25,9 @@
++ #include <sys/stat.h>
++ #include <sys/vfs.h>
++ #include <unistd.h>
+++#include <algorithm>
++ #include <map>
+++#include <utility>
++ #include <vector>
++ #include <dirent.h>
++ #include <time.h>
++@@ -4875,13 +4877,25 @@ bool TWPartitionManager::Unmap_Super_Devices() {
++ 		while ((de = readdir(d)) != NULL) {
++ 			if (de->d_type == DT_LNK) {
++ 				std::string partition = de->d_name;
++-				if (strcmp(partition.c_str(),"userdata") != 0){
++-					LOGINFO("removing dynamic partition: %s\n", partition.c_str());
++-					destroyed = DestroyLogicalPartition(partition);
++-					if (!destroyed) {
++-						closedir(d);
++-						return false;
++-					}
+++				if (partition == "userdata") {
+++					continue;
+++				}
+++
+++				// Prepare_Super_Volume creates bare mapper aliases such as
+++				// /dev/block/mapper/vendor -> vendor_a for image flashing. The
+++				// targeted loop above has already removed the slot-suffixed logical
+++				// partition, so the alias must not be treated as another DM device.
+++				if (std::find(Super_Partition_List.begin(), Super_Partition_List.end(), partition) !=
+++						Super_Partition_List.end()) {
+++					LOGINFO("skipping logical partition alias: %s\n", partition.c_str());
+++					continue;
+++				}
+++
+++				LOGINFO("removing dynamic partition: %s\n", partition.c_str());
+++				destroyed = DestroyLogicalPartition(partition);
+++				if (!destroyed) {
+++					closedir(d);
+++					return false;
++ 				}
++ 			}
++ 		}
++@@ -4916,45 +4930,272 @@ bool TWPartitionManager::Check_Pending_Merges() {
++ 	return true;
++ }
++ 
+++static bool Is_UsbOtg_Scsi_Disk(const std::string& disk) {
+++	char block_device[PATH_MAX];
+++	char sysfs_device[PATH_MAX];
+++	char resolved_device[PATH_MAX];
+++
+++	if (disk.size() <= 2 || disk.compare(0, 2, "sd") != 0)
+++		return false;
+++
+++	snprintf(block_device, sizeof(block_device), "/dev/block/%s", disk.c_str());
+++	snprintf(sysfs_device, sizeof(sysfs_device), "/sys/block/%s/device", disk.c_str());
+++	if (!TWFunc::Path_Exists(block_device) ||
+++		realpath(sysfs_device, resolved_device) == NULL)
+++		return false;
+++
+++	// UFS also appears as sdX. Only accept a device whose resolved parent
+++	// traverses the USB bus, rather than relying on a volatile sdX name.
+++	return strstr(resolved_device, "/usb") != NULL;
+++}
+++
+++static bool Resolve_UsbOtg_Block_Device(std::string* block_device) {
+++	DIR* block_directory = opendir("/sys/block");
+++	if (block_directory == NULL) {
+++		LOGINFO("Unable to scan /sys/block for USB OTG: %s\n", strerror(errno));
+++		return false;
+++	}
+++
+++	std::vector<std::string> disks;
+++	struct dirent* entry;
+++	while ((entry = readdir(block_directory)) != NULL) {
+++		if (Is_UsbOtg_Scsi_Disk(entry->d_name))
+++			disks.emplace_back(entry->d_name);
+++	}
+++	closedir(block_directory);
+++	std::sort(disks.begin(), disks.end());
+++
+++	for (const std::string& disk : disks) {
+++		char disk_directory[PATH_MAX];
+++		snprintf(disk_directory, sizeof(disk_directory), "/sys/block/%s", disk.c_str());
+++
+++		DIR* partition_directory = opendir(disk_directory);
+++		if (partition_directory == NULL)
+++			continue;
+++
+++		std::vector<std::pair<long, std::string>> partitions;
+++		while ((entry = readdir(partition_directory)) != NULL) {
+++			std::string name = entry->d_name;
+++			if (name.compare(0, disk.size(), disk) != 0 || name.size() == disk.size())
+++				continue;
+++
+++			const char* suffix = name.c_str() + disk.size();
+++			char* end = NULL;
+++			long partition_number = strtol(suffix, &end, 10);
+++			if (*suffix == '\0' || *end != '\0')
+++				continue;
+++
+++			char partition_marker[PATH_MAX];
+++			snprintf(partition_marker, sizeof(partition_marker),
+++					 "/sys/block/%s/%s/partition", disk.c_str(), name.c_str());
+++			if (TWFunc::Path_Exists(partition_marker))
+++				partitions.emplace_back(partition_number, name);
+++		}
+++		closedir(partition_directory);
+++
+++		if (!partitions.empty()) {
+++			std::sort(partitions.begin(), partitions.end());
+++			*block_device = "/dev/block/" + partitions.front().second;
+++		} else {
+++			*block_device = "/dev/block/" + disk;
+++		}
+++		return true;
+++	}
+++
+++	return false;
+++}
 ++
 ++static constexpr char kUsbOtgRoleSwitch[] = "/sys/class/usb_role/11201000.usb0-role-switch/role";
 ++static constexpr char kUsbOtgEnable[] = "/sys/devices/platform/charger/power_supply/usb/otg_enable";
@@ -951,36 +2548,32 @@ index 9fd5181..175953f 100644
 ++		*mtp_suspended = false;
 ++	}
 ++}
- +
-  void TWPartitionManager::Check_UsbOtg_Status() {
-  	static bool mtp_was_enabled;
-@@ -770,28 +931,72 @@ index 0ea3a125..e640d27b 100755
-  	static bool usbotg_mounted = false;
- -	static string usbotg_prim = "";
- -	static string usbotg_alt = "";
+++
++ void TWPartitionManager::Check_UsbOtg_Status() {
++ 	static bool mtp_was_enabled;
+++	static bool mtp_suspended = false;
++ 	static bool usbotg_mounted = false;
++-	static string usbotg_prim = "";
++-	static string usbotg_alt = "";
 ++	static bool host_switch_pending = false;
 ++	static bool host_disabled_by_user = false;
 ++	static time_t host_switch_started = 0;
- +	static std::string mounted_device = "";
-  	static TWPartition* usbotg = Find_Partition_By_Path("usb_otg");
- +	std::string resolved_device;
+++	static std::string mounted_device = "";
++ 	static TWPartition* usbotg = Find_Partition_By_Path("usb_otg");
+++	std::string resolved_device;
 ++	time_t now = time(NULL);
-  
- -	if (usbotg && !usbotg->Primary_Block_Device.empty()) {
- -		usbotg_prim = usbotg->Primary_Block_Device;
- -		usbotg_alt = usbotg->Alternate_Block_Device;
- -	} else return;
--+	if (usbotg == NULL)
--+		return;
-- 
++ 
++-	if (usbotg && !usbotg->Primary_Block_Device.empty()) {
++-		usbotg_prim = usbotg->Primary_Block_Device;
++-		usbotg_alt = usbotg->Alternate_Block_Device;
++-	} else return;
 +-
- -	if (TWFunc::Path_Exists(usbotg_prim) || (!usbotg_alt.empty() && TWFunc::Path_Exists(usbotg_alt))) {
- -		// Auto-mount only once when usb_otg was connected
- -		if (!usbotg_mounted) goto mount;
- -	} else if (usbotg_mounted) {
- -		// Is seems usb_otg was disconnected, so unmount it
- -		goto unmount;
---	}
++-	if (TWFunc::Path_Exists(usbotg_prim) || (!usbotg_alt.empty() && TWFunc::Path_Exists(usbotg_alt))) {
++-		// Auto-mount only once when usb_otg was connected
++-		if (!usbotg_mounted) goto mount;
++-	} else if (usbotg_mounted) {
++-		// Is seems usb_otg was disconnected, so unmount it
++-		goto unmount;
 ++	if (usbotg == NULL || !UsbOtg_Host_Supported()) {
 ++		DataManager::SetValue("tw_has_usb_otg", 0);
 ++		return;
@@ -1027,17 +2620,15 @@ index 9fd5181..175953f 100644
 ++		LOGINFO("USB OTG host mode requested by user; preparing host controller\n");
 ++		return;
 + 	}
- -	return;
--+	if (Resolve_UsbOtg_Block_Device(&resolved_device)) {
--+		if (usbotg_mounted && mounted_device == resolved_device)
--+			return;
-  
- -mount:
- -	mtp_was_enabled = TWFunc::Toggle_MTP(false);
-@@ -800,6 +1005,14 @@ index 0ea3a125..e640d27b 100755
- -	if (PageManager::GetCurrentPage() == "filemanagerlist" && DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
- -		gui_changePage("filemanagerlist");
- -	return;
++-	return;
++ 
++-mount:
++-	mtp_was_enabled = TWFunc::Toggle_MTP(false);
++-	usbotg->Mount(true);
++-	usbotg_mounted = true;
++-	if (PageManager::GetCurrentPage() == "filemanagerlist" && DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
++-		gui_changePage("filemanagerlist");
++-	return;
 ++	if (Resolve_UsbOtg_Block_Device(&resolved_device)) {
 ++		host_switch_pending = false;
 ++		host_switch_started = 0;
@@ -1046,43 +2637,42 @@ index 9fd5181..175953f 100644
 + 
 +-unmount:
 +-	usbotg->UnMount(false);
- +		if (usbotg_mounted)
- +			usbotg->UnMount(false);
- +
-@@ -812,6 +1025,7 @@ index 0ea3a125..e640d27b 100755
- +			mtp_was_enabled = TWFunc::Toggle_MTP(false);
- +			mtp_suspended = true;
- +		}
+++		if (usbotg_mounted)
+++			usbotg->UnMount(false);
+++
+++		usbotg->Primary_Block_Device = resolved_device;
+++		usbotg->Alternate_Block_Device.clear();
+++		usbotg->Actual_Block_Device = resolved_device;
+++		usbotg->Can_Be_Mounted = true;
+++		usbotg->Is_Present = true;
+++		if (!mtp_suspended) {
+++			mtp_was_enabled = TWFunc::Toggle_MTP(false);
+++			mtp_suspended = true;
+++		}
 ++		DataManager::SetValue("tw_usb_otg_host_active", 1);
- +		usbotg_mounted = usbotg->Mount(true);
- +		mounted_device = resolved_device;
- +		if (PageManager::GetCurrentPage() == "filemanagerlist" &&
-@@ -819,11 +1033,13 @@ index 0ea3a125..e640d27b 100755
- +			gui_changePage("filemanagerlist");
- +		return;
- +	}
-- 
---unmount:
---	usbotg->UnMount(false);
--+	if (usbotg_mounted)
+++		usbotg_mounted = usbotg->Mount(true);
+++		mounted_device = resolved_device;
+++		if (PageManager::GetCurrentPage() == "filemanagerlist" &&
+++			DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
+++			gui_changePage("filemanagerlist");
+++		return;
+++	}
 ++
 ++	if (usbotg_mounted) {
- +		usbotg->UnMount(false);
+++		usbotg->UnMount(false);
 ++		usbotg_mounted = false;
 ++		mounted_device.clear();
 ++		Restore_UsbOtg_Device_Mode(&mtp_suspended, mtp_was_enabled);
 ++	}
- +	usbotg->Primary_Block_Device.clear();
- +	usbotg->Alternate_Block_Device.clear();
- +	usbotg->Actual_Block_Device.clear();
-@@ -831,13 +1047,34 @@ index 0ea3a125..e640d27b 100755
-  	usbotg->Size = 0;
-  	usbotg->Used = 0;
-  	usbotg->Free = 0;
-- 	usbotg_mounted = false;
+++	usbotg->Primary_Block_Device.clear();
+++	usbotg->Alternate_Block_Device.clear();
+++	usbotg->Actual_Block_Device.clear();
++ 	usbotg->Is_Present = false;
++ 	usbotg->Size = 0;
++ 	usbotg->Used = 0;
++ 	usbotg->Free = 0;
 +-	usbotg_mounted = false;
- -	if (PageManager::GetCurrentPage() == "filemanagerlist" && DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
--+	mounted_device.clear();
++-	if (PageManager::GetCurrentPage() == "filemanagerlist" && DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
 ++
 ++	if (host_switch_pending) {
 ++		if (host_switch_started == 0) {
@@ -1105,19 +2695,17 @@ index 9fd5181..175953f 100644
 ++		return;
 ++	}
 ++
- +	if (mtp_suspended) {
--+		TWFunc::Toggle_MTP(mtp_was_enabled);
--+		mtp_suspended = false;
+++	if (mtp_suspended) {
 ++		Restore_UsbOtg_Device_Mode(&mtp_suspended, mtp_was_enabled);
- +	}
+++	}
 ++
- +	if (PageManager::GetCurrentPage() == "filemanagerlist" &&
- +		DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
-  		gui_changePage("filemanagerlist");
-@@ -845,6 +1082,27 @@ index 0ea3a125..e640d27b 100755
-  }
-  
-  std::pair<string, string> TWPartitionManager::Get_Partition_Checksums(TWPartition* twrpPart) {
+++	if (PageManager::GetCurrentPage() == "filemanagerlist" &&
+++		DataManager::GetStrValue("tw_file_location1") == "/usb_otg")
++ 		gui_changePage("filemanagerlist");
++-	TWFunc::Toggle_MTP(mtp_was_enabled);
++ }
++ 
++ std::pair<string, string> TWPartitionManager::Get_Partition_Checksums(TWPartition* twrpPart) {
 +diff --git a/prebuilt/Android.mk b/prebuilt/Android.mk
 +index a0240333..6961575c 100755
 +--- a/prebuilt/Android.mk
@@ -1142,7 +2730,107 @@ index 9fd5181..175953f 100644
  diff --git a/twrp.cpp b/twrp.cpp
  index c9fdc572..f74435d2 100644
  --- a/twrp.cpp
-diff --git a/prebuilt/global/modules/focaltech_touch_rodin.ko b/prebuilt/global/modules/focaltech_touch_rodin.ko
+diff --git a/desired/patches/orangefox-vendor-twrp.patch b/patches/orangefox-vendor-twrp.patch
+new file mode 100644
+index 0000000..3304a52
+--- /dev/null
++++ b/patches/orangefox-vendor-twrp.patch
+@@ -0,0 +1,50 @@
++diff --git a/build/soong/Android.bp b/build/soong/Android.bp
++index 6021975..798c1cf 100644
++--- a/build/soong/Android.bp
+++++ b/build/soong/Android.bp
++@@ -175,6 +175,7 @@ soong_config_module_type {
++     bool_variables: [
++         "tw_event_logging",
++         "tw_no_screen_blank",
+++        "tw_drm_blank_keep_pipeline",
++         "tw_no_screen_timeout",
++         "tw_oem_build",
++         "tw_round_screen",
++@@ -218,6 +219,9 @@ twrp {
++         tw_no_screen_blank: {
++             cflags: ["-DTW_NO_SCREEN_BLANK"]
++         },
+++        tw_drm_blank_keep_pipeline: {
+++            cflags: ["-DTW_DRM_BLANK_KEEP_PIPELINE"]
+++        },
++         tw_no_screen_timeout: {
++             cflags: ["-DTW_NO_SCREEN_TIMEOUT"]
++         },
++diff --git a/config/BoardConfigSoong.mk b/config/BoardConfigSoong.mk
++index dbaa987..cc32b8a 100644
++--- a/config/BoardConfigSoong.mk
+++++ b/config/BoardConfigSoong.mk
++@@ -38,6 +38,7 @@ EXPORT_TO_SOONG := \
++ # Documentation here:
++ # https://github.com/LineageOS/android_build_soong/commit/8328367c44085b948c003116c0ed74a047237a69
++ 
+++include bootable/recovery/orangefox_soong.mk
++ SOONG_CONFIG_NAMESPACES += twrpVarsPlugin
++ 
++ SOONG_CONFIG_twrpVarsPlugin :=
++@@ -61,6 +62,7 @@ SOONG_CONFIG_twrpGlobalVars += \
++     tw_use_key_code_touch_sync \
++     tw_ozip_decrypt_key \
++     tw_no_screen_blank \
+++    tw_drm_blank_keep_pipeline \
++     tw_no_screen_timeout \
++     tw_oem_build \
++     tw_x_offset \
++@@ -123,6 +125,7 @@ SOONG_CONFIG_twrpGlobalVars_tw_event_logging := $(TW_EVENT_LOGGING)
++ SOONG_CONFIG_twrpGlobalVars_tw_use_key_code_touch_sync := $(TW_USE_KEY_CODE_TOUCH_SYNC)
++ SOONG_CONFIG_twrpGlobalVars_tw_ozip_decrypt_key := $(subst ",, $(TW_OZIP_DECRYPT_KEY))
++ SOONG_CONFIG_twrpGlobalVars_tw_no_screen_blank := $(TW_NO_SCREEN_BLANK)
+++SOONG_CONFIG_twrpGlobalVars_tw_drm_blank_keep_pipeline := $(TW_DRM_BLANK_KEEP_PIPELINE)
++ SOONG_CONFIG_twrpGlobalVars_tw_no_screen_timeout := $(TW_NO_SCREEN_TIMEOUT)
++ SOONG_CONFIG_twrpGlobalVars_tw_oem_build := $(TW_OEM_BUILD)
++ SOONG_CONFIG_twrpGlobalVars_tw_x_offset := $(TW_X_OFFSET)
+diff --git a/prebuilt/README.md b/prebuilt/README.md
+index 4ec9694..9a374a8 100644
+--- a/prebuilt/README.md
++++ b/prebuilt/README.md
+@@ -8,6 +8,8 @@ dump. Update all of them together when changing the firmware base.
+ | `kernel` | kernel payload from `boot_a` | `55caa83bf1dd1ab5e34521f1faa18532a6110a065123577a1a62d80ee5178569` |
+ | `dtb/mt6899-rodin.dtb` | DTB from `vendor_boot_a` | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
+ | `dtbo.img` | direct copy of `dtbo_a` | `ccd008dc7336301b7cc6fab7b59400b3debd2866f055f085e61696dbc7c0f298` |
++| `global/vendor_ramdisk00` | locally extracted type-1 platform fragment from Global OS3.0.301.0.WOJMIXM `vendor_boot.img` | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
++| `global/modules/*.ko` | matching Global OS3.0.301.0.WOJMIXM `vendor_dlkm` modules | per-file checks in `verify-build-inputs.sh` |
+ | `vendor_boot_stock.img` | direct copy of `vendor_boot_a` | `499bb470719b790baf90f8b49a0340e09b7ed983f3508736a86a6d1e9b503f47` |
+ | `vendor_ramdisk00` | platform fragment from `vendor_boot_a` | `192977d50a121f7a5ddfab0212488ef0dbb0326cad802ce9d664649967a9845c` |
+ 
+@@ -20,3 +22,30 @@ first-stage runtime, SELinux data, fstab, firmware, and all 244 stock modules
+ required by normal Android boot. Both generated fragments use LZ4. The supplied
+ kernel advertises zstd support, but a real-device zstd test failed before ADB
+ became available.
++
++The retained type-1 platform fragment also supplies the stock
++`android.hardware.boot-service.mtk_recovery` AIDL BootControl binary and its
++VINTF fragment. OrangeFox replaces only its stock init rc with a recovery rc
++that preloads `librodin_libcxx_compat.so`; this keeps `bootctl` on the stock
++AIDL path instead of falling back to the legacy HIDL UFS boot-region code.
++
++The default build profile is `cn`, which uses `vendor_ramdisk00`. Global
++OS3.0.301.0.WOJMIXM must instead use `global/vendor_ramdisk00`; select it with
++`RODIN_FIRMWARE_VARIANT=global`. The Global profile changes the retained type-1
++platform fragment and replaces the seven Recovery-only touch, haptic, and eSE
++modules from `global/modules/` before the recovery fragment is packed. Its DTB,
++fstab, init, SELinux data, and stock recovery fragment were verified identical
++to the CN base, so the remaining OrangeFox recovery resources stay shared.
++
++The textual device-tree patch deliberately does not embed the 29 MiB Global
++fragment. Populate it from the matching full firmware package before using the
++Global profile:
++
++```bash
++device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
++  /path/to/rodin_global_images_OS3.0.301.0.WOJMIXM_16.0/images/vendor_boot.img
++```
++
++The importer accepts only the verified 64 MiB Global `vendor_boot.img` and
++checks its hash, extracted type-1 fragment, and DTB before atomically replacing
++`global/vendor_ramdisk00`.
+diff --git a/desired/prebuilt/global/modules/focaltech_touch_rodin.ko b/prebuilt/global/modules/focaltech_touch_rodin.ko
 new file mode 100644
 index 0000000..402320f
 --- /dev/null
@@ -1151,7 +2839,7 @@ index 0000000..402320f
 +version https://git-lfs.github.com/spec/v1
 +oid sha256:87c41bce1aa64d855b685c5105ed177fe499968d44b802b48d7bd620697fe9da
 +size 744224
-diff --git a/prebuilt/global/modules/goodix_core_rodin.ko b/prebuilt/global/modules/goodix_core_rodin.ko
+diff --git a/desired/prebuilt/global/modules/goodix_core_rodin.ko b/prebuilt/global/modules/goodix_core_rodin.ko
 new file mode 100644
 index 0000000..75c8378
 --- /dev/null
@@ -1160,7 +2848,7 @@ index 0000000..75c8378
 +version https://git-lfs.github.com/spec/v1
 +oid sha256:c0e54ace6d081d949db7b900b0f10f890b7bf9e5eb763878f3c6874b806178d7
 +size 529640
-diff --git a/prebuilt/global/modules/nxp_i2c.ko b/prebuilt/global/modules/nxp_i2c.ko
+diff --git a/desired/prebuilt/global/modules/nxp_i2c.ko b/prebuilt/global/modules/nxp_i2c.ko
 new file mode 100644
 index 0000000..eb687da
 --- /dev/null
@@ -1169,7 +2857,7 @@ index 0000000..eb687da
 +version https://git-lfs.github.com/spec/v1
 +oid sha256:8a8ebd267c2715d3efd9dea4da79a63dcc061ff3a0edbdd14a52d947b4b3d7be
 +size 59896
-diff --git a/prebuilt/global/modules/p73.ko b/prebuilt/global/modules/p73.ko
+diff --git a/desired/prebuilt/global/modules/p73.ko b/prebuilt/global/modules/p73.ko
 new file mode 100644
 index 0000000..5a2d780
 --- /dev/null
@@ -1178,7 +2866,7 @@ index 0000000..5a2d780
 +version https://git-lfs.github.com/spec/v1
 +oid sha256:712cbc4503a2906ca828b1a86add1b5044c3eb892eaeb9c1bbd99450e12fb9a0
 +size 36528
-diff --git a/prebuilt/global/modules/scp.ko b/prebuilt/global/modules/scp.ko
+diff --git a/desired/prebuilt/global/modules/scp.ko b/prebuilt/global/modules/scp.ko
 new file mode 100644
 index 0000000..edbb5a1
 --- /dev/null
@@ -1187,7 +2875,7 @@ index 0000000..edbb5a1
 +version https://git-lfs.github.com/spec/v1
 +oid sha256:b23492d891d88afcb00637a49b19b5fa460e2ee2c297d7436dd2ada22cffcd17
 +size 474640
-diff --git a/prebuilt/global/modules/si_haptic.ko b/prebuilt/global/modules/si_haptic.ko
+diff --git a/desired/prebuilt/global/modules/si_haptic.ko b/prebuilt/global/modules/si_haptic.ko
 new file mode 100644
 index 0000000..06cab7d
 --- /dev/null
@@ -1196,7 +2884,7 @@ index 0000000..06cab7d
 +version https://git-lfs.github.com/spec/v1
 +oid sha256:e48b06dc688f5eae1b5568587376aea215b2ae9bb8310867e33df563e652c5ad
 +size 222176
-diff --git a/prebuilt/global/modules/xiaomi_touch_rodin.ko b/prebuilt/global/modules/xiaomi_touch_rodin.ko
+diff --git a/desired/prebuilt/global/modules/xiaomi_touch_rodin.ko b/prebuilt/global/modules/xiaomi_touch_rodin.ko
 new file mode 100644
 index 0000000..bca6502
 --- /dev/null
@@ -1205,25 +2893,151 @@ index 0000000..bca6502
 +version https://git-lfs.github.com/spec/v1
 +oid sha256:e3532ef88d039eddf35c6d067c9d6be3161972182ffd9c0514ada6fc6291035b
 +size 210064
+diff --git a/desired/recovery/root/init.recovery.bootctl.rc b/recovery/root/init.recovery.bootctl.rc
+new file mode 100644
+index 0000000..0d7e548
+--- /dev/null
++++ b/recovery/root/init.recovery.bootctl.rc
+@@ -0,0 +1,12 @@
++# Keep the stock AIDL BootControl implementation from the platform ramdisk.
++# The fallback HIDL implementation uses an obsolete UFS boot-region ioctl on
++# rodin and can make bootctl report a failed slot change. The stock service
++# requires the newer libc++ abort symbol.
++service vendor.boot-default /system/bin/hw/android.hardware.boot-service.mtk_recovery
++    class early_hal
++    user root
++    group root
++    setenv LD_LIBRARY_PATH /system/lib64:/vendor/lib64
++    setenv LD_PRELOAD /system/lib64/librodin_libcxx_compat.so
++    seclabel u:r:hal_bootctl_default:s0
++    interface aidl android.hardware.boot.IBootControl/default
+diff --git a/recovery/root/init.recovery.keymint.rc b/recovery/root/init.recovery.keymint.rc
+index 7570d83..6e3dbb1 100644
+--- a/recovery/root/init.recovery.keymint.rc
++++ b/recovery/root/init.recovery.keymint.rc
+@@ -37,6 +37,8 @@ service rodin.omapi_bridge /system/bin/rodin_omapi_bridge
+     class hal
+     user system
+     group system secure_element nfc
++    setenv LD_LIBRARY_PATH /vendor/lib64:/system/lib64
++    setenv LD_PRELOAD /system/lib64/librodin_libcxx_compat.so
+     seclabel u:r:recovery:s0
+     disabled
+ 
+@@ -77,9 +79,7 @@ on fs
+ on property:init.svc.tee-supplicant=running
+     start vendor.keymint-mitee
+     start vendor.secure_element_hal_service
++    start vendor.weaver_nxp
+ 
+ on property:init.svc.vendor.secure_element_hal_service=running
+     start rodin.omapi_bridge
+-
+-on property:vendor.omapi_bridge.ready=1
+-    start vendor.weaver_nxp
+diff --git a/recovery/root/init.recovery.mt6899.rc b/recovery/root/init.recovery.mt6899.rc
+index ad0c794..4f02c9f 100644
+--- a/recovery/root/init.recovery.mt6899.rc
++++ b/recovery/root/init.recovery.mt6899.rc
+@@ -1,3 +1,4 @@
++import /init.recovery.bootctl.rc
+ import /init.recovery.keymint.rc
+ 
+ service rodin-touch-loader /system/bin/load-touch-modules.sh
+diff --git a/recovery/root/system/etc/twrp.flags b/recovery/root/system/etc/twrp.flags
+index e3dacad..f370250 100644
+--- a/recovery/root/system/etc/twrp.flags
++++ b/recovery/root/system/etc/twrp.flags
+@@ -58,7 +58,12 @@
+ 
+ # Removable Storage
+ /external_sd        auto  /dev/block/mmcblk1p1  /dev/block/mmcblk0p1     flags=display="MicroSD Card";storage;wipeingui;removable
+-/usb_otg            auto  /dev/block/sda1 /dev/block/sda /dev/block/sdd1 flags=display="USB-OTG";storage;wipeingui;removable
++# USB mass-storage device names are assigned dynamically. The recovery source
++# patch discovers only disks whose /sys/block device path is on the USB bus,
++# then prefers their first partition and falls back to the whole disk. The
++# sentinel below prevents TWRP from mistaking a non-USB /dev/block/sdX device
++# for OTG before that resolver runs.
++/usb_otg            auto  /dev/block/rodin-usb-otg-unresolved flags=display="USB-OTG";storage;wipeingui;removable
+ 
+ # Flashable logical partitions
+ /system_image	         emmc		/dev/block/mapper/system								  flags=display="System Image";slotselect;backup;flashimg
+diff --git a/tools/apply-orangefox-patches.sh b/tools/apply-orangefox-patches.sh
+index a663b37..cd61a09 100755
+--- a/tools/apply-orangefox-patches.sh
++++ b/tools/apply-orangefox-patches.sh
+@@ -5,8 +5,10 @@ DEVICE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ TOP_DIR="${1:-$(cd -- "${DEVICE_DIR}/../../.." && pwd -P)}"
+ RECOVERY_DIR="${TOP_DIR}/bootable/recovery"
+ BUILD_DIR="${TOP_DIR}/build/make"
++VENDOR_TWRP_DIR="${TOP_DIR}/vendor/twrp"
+ RECOVERY_PATCH="${DEVICE_DIR}/patches/orangefox-recovery.patch"
+ BUILD_PATCH="${DEVICE_DIR}/patches/orangefox-build-make.patch"
++VENDOR_TWRP_PATCH="${DEVICE_DIR}/patches/orangefox-vendor-twrp.patch"
+ 
+ apply_patch_once() {
+     local repository="$1" patch_file="$2" label="$3"
+@@ -30,6 +32,7 @@ apply_patch_once() {
+ }
+ 
+ apply_patch_once "${BUILD_DIR}" "${BUILD_PATCH}" "OrangeFox build/make"
++apply_patch_once "${VENDOR_TWRP_DIR}" "${VENDOR_TWRP_PATCH}" "OrangeFox vendor/twrp"
+ apply_patch_once "${RECOVERY_DIR}" "${RECOVERY_PATCH}" "OrangeFox recovery"
+ 
+ for language in es_ES hu_HU zh_CN zh_TW; do
 diff --git a/tools/build-system-compatible-vendor-boot.sh b/tools/build-system-compatible-vendor-boot.sh
-index 2ab0354..75a8fc6 100755
+index 890d38d..75a8fc6 100755
 --- a/tools/build-system-compatible-vendor-boot.sh
 +++ b/tools/build-system-compatible-vendor-boot.sh
-@@ -34,8 +34,9 @@ MKBOOTIMG="${PRODUCT_OUT%/target/product/rodin}/host/linux-x86/bin/mkbootimg"
+@@ -4,22 +4,54 @@ set -euo pipefail
+ DEVICE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ TOP_DIR="$(cd -- "${DEVICE_DIR}/../../.." && pwd -P)"
+ PRODUCT_OUT="${1:-${OUT_DIR:-${TOP_DIR}/out}/target/product/rodin}"
+-OUTPUT_IMAGE="${2:-${PRODUCT_OUT}/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img}"
++FIRMWARE_VARIANT="${RODIN_FIRMWARE_VARIANT:-cn}"
+ 
+-STOCK_RAMDISK="${DEVICE_DIR}/prebuilt/vendor_ramdisk00"
++case "${FIRMWARE_VARIANT}" in
++    cn)
++        STOCK_RAMDISK="${DEVICE_DIR}/prebuilt/vendor_ramdisk00"
++        STOCK_RAMDISK_SHA256="192977d50a121f7a5ddfab0212488ef0dbb0326cad802ce9d664649967a9845c"
++        DEFAULT_OUTPUT_IMAGE="${PRODUCT_OUT}/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img"
++        DEFAULT_DISABLE_AVB_OUTPUT_IMAGE="${PRODUCT_OUT}/OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img"
++        ;;
++    global)
++        STOCK_RAMDISK="${DEVICE_DIR}/prebuilt/global/vendor_ramdisk00"
++        STOCK_RAMDISK_SHA256="349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731"
++        DEFAULT_OUTPUT_IMAGE="${PRODUCT_OUT}/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img"
++        DEFAULT_DISABLE_AVB_OUTPUT_IMAGE="${PRODUCT_OUT}/OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img"
++        ;;
++    *)
++        echo "unsupported RODIN_FIRMWARE_VARIANT: ${FIRMWARE_VARIANT} (expected cn or global)" >&2
++        exit 1
++        ;;
++esac
++
++OUTPUT_IMAGE="${2:-${DEFAULT_OUTPUT_IMAGE}}"
++DISABLE_AVB_OUTPUT_IMAGE="${3:-${DEFAULT_DISABLE_AVB_OUTPUT_IMAGE}}"
+ STOCK_DTB="${DEVICE_DIR}/prebuilt/dtb/mt6899-rodin.dtb"
+ RECOVERY_LZ4="${PRODUCT_OUT}/obj/PACKAGING/vendor_ramdisk_fragments_intermediates/recovery.cpio.lz4"
+ LZ4="${PRODUCT_OUT%/target/product/rodin}/host/linux-x86/bin/lz4"
+ MKBOOTIMG="${PRODUCT_OUT%/target/product/rodin}/host/linux-x86/bin/mkbootimg"
  MKBOOTFS="${PRODUCT_OUT%/target/product/rodin}/host/linux-x86/bin/mkbootfs"
  AVBTOOL="${PRODUCT_OUT%/target/product/rodin}/host/linux-x86/bin/avbtool"
- UNPACK_BOOTIMG="${TOP_DIR}/system/tools/mkbootimg/unpack_bootimg.py"
++UNPACK_BOOTIMG="${TOP_DIR}/system/tools/mkbootimg/unpack_bootimg.py"
 +DTB_PATCHER="${DEVICE_DIR}/tools/patch-vendor-boot-dtb.py"
  
--for file in "$STOCK_RAMDISK" "$STOCK_DTB" "$RECOVERY_LZ4" "$LZ4" "$MKBOOTIMG" "$MKBOOTFS" "$AVBTOOL" "$UNPACK_BOOTIMG"; do
+-for file in "$STOCK_RAMDISK" "$STOCK_DTB" "$RECOVERY_LZ4" "$LZ4" "$MKBOOTIMG" "$MKBOOTFS" "$AVBTOOL"; do
 +for file in "$STOCK_RAMDISK" "$STOCK_DTB" "$RECOVERY_LZ4" "$LZ4" "$MKBOOTIMG" "$MKBOOTFS" "$AVBTOOL" "$UNPACK_BOOTIMG" "$DTB_PATCHER"; do
      if [ ! -f "$file" ]; then
          echo "missing required build input: $file" >&2
          exit 1
-@@ -45,6 +46,12 @@ command -v python3 >/dev/null 2>&1 || {
-     echo "missing required host command: python3" >&2
-     exit 1
- }
+     fi
+ done
++command -v python3 >/dev/null 2>&1 || {
++    echo "missing required host command: python3" >&2
++    exit 1
++}
 +for command_name in fdtget fdtput strings; do
 +    command -v "$command_name" >/dev/null 2>&1 || {
 +        echo "missing required host command: $command_name (install device-tree-compiler)" >&2
@@ -1233,10 +3047,27 @@ index 2ab0354..75a8fc6 100755
  
  check_sha256() {
      local expected="$1"
-@@ -78,10 +85,83 @@ disable_avb_unsigned_image="${work_dir}/vendor_boot-disable-avb.img"
- disable_avb_bootconfig="${work_dir}/vendor_boot-disable-avb.bootconfig"
- disable_avb_inspect_dir="${work_dir}/vendor_boot-disable-avb-inspect"
- disable_avb_verify_image="${work_dir}/vendor_boot.img"
+@@ -34,7 +66,7 @@ check_sha256() {
+     fi
+ }
+ 
+-check_sha256 192977d50a121f7a5ddfab0212488ef0dbb0326cad802ce9d664649967a9845c "$STOCK_RAMDISK"
++check_sha256 "$STOCK_RAMDISK_SHA256" "$STOCK_RAMDISK"
+ check_sha256 38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae "$STOCK_DTB"
+ 
+ work_dir="$(mktemp -d "${TMPDIR:-/tmp}/rodin-vendor-boot.XXXXXX")"
+@@ -45,11 +77,91 @@ platform_cpio="${work_dir}/platform.cpio"
+ platform_root="${work_dir}/platform-root"
+ platform_pruned_cpio="${work_dir}/platform-pruned.cpio"
+ platform_pruned_lz4="${work_dir}/platform-pruned.cpio.lz4"
++disable_avb_platform_root="${work_dir}/platform-disable-avb-root"
++disable_avb_platform_cpio="${work_dir}/platform-disable-avb.cpio"
++disable_avb_platform_lz4="${work_dir}/platform-disable-avb.cpio.lz4"
+ unsigned_image="${work_dir}/vendor_boot.img"
++disable_avb_unsigned_image="${work_dir}/vendor_boot-disable-avb.img"
++disable_avb_bootconfig="${work_dir}/vendor_boot-disable-avb.bootconfig"
++disable_avb_inspect_dir="${work_dir}/vendor_boot-disable-avb-inspect"
++disable_avb_verify_image="${work_dir}/vendor_boot.img"
 +patched_dtb="${work_dir}/mt6899-rodin-no-usb-offload.dtb"
 +
 +# Android's USB audio offload node makes mtu3 reject host-mode transitions
@@ -1317,7 +3148,77 @@ index 2ab0354..75a8fc6 100755
  module_count="$(cpio -it --quiet < "$recovery_cpio" | awk '/^lib\/modules\/.*\.ko$/ { count++ } END { print count + 0 }')"
  if [ "$module_count" -gt 7 ]; then
      echo "recovery fragment still contains $module_count modules; expected at most 7" >&2
-@@ -171,6 +251,37 @@ for essential in \
+@@ -60,12 +172,38 @@ fi
+ # userspace. Normal Android boot never uses these files after /system is
+ # mounted, and the OrangeFox recovery fragment supplies its own copies. Drop
+ # only that recovery-only payload while retaining stock first-stage init,
+-# linker/runtime, SELinux policy, fstab, firmware, and every kernel module.
++# linker/runtime, SELinux policy, fstab, firmware, every kernel module, and
++# the MediaTek AIDL BootControl binary. The recovery-specific rc file for the
++# latter is replaced below so it can preload the libc++ compatibility shim.
+ mkdir -p "$platform_root"
+ (
+     cd "$platform_root"
+     cpio -idm --quiet --no-absolute-filenames < "$platform_cpio"
+ )
++
++stock_boot_control_service="$platform_root/system/bin/hw/android.hardware.boot-service.mtk_recovery"
++stock_boot_control_manifest="$platform_root/system/etc/vintf/manifest/android.hardware.boot-service.mtk.xml"
++stock_boot_control_manifest_destination="$platform_root/vendor/etc/vintf/manifest/android.hardware.boot-service.mtk.xml"
++for required in "$stock_boot_control_service" "$stock_boot_control_manifest" \
++        "$platform_root/system/lib64/libmtk_bsg.so"; do
++    if [ ! -f "$required" ]; then
++        echo "stock platform ramdisk is missing required BootControl input: $required" >&2
++        exit 1
++    fi
++done
++check_sha256 7849dab766646269b3860aba028552b16c88cd52ba7b4d3f1d8a10726229c78c \
++    "$stock_boot_control_service"
++if ! grep -qF '<fqname>IBootControl/default</fqname>' "$stock_boot_control_manifest"; then
++    echo "stock AIDL BootControl VINTF fragment is invalid" >&2
++    exit 1
++fi
++
++# This is a device manifest. Keeping it below /system makes
++# hwservicemanager parse it as a framework fragment, which prevents Keystore2
++# from registering and leaves recovery waiting for metadata decryption.
++mkdir -p "$(dirname "$stock_boot_control_manifest_destination")"
++mv "$stock_boot_control_manifest" "$stock_boot_control_manifest_destination"
++
+ rm -rf "$platform_root/res"
+ rm -f \
+     "$platform_root/miui.factoryreset.rc" \
+@@ -79,16 +217,14 @@ rm -f \
+     "$platform_root/system/bin/toolbox" \
+     "$platform_root/system/bin/toybox" \
+     "$platform_root/system/bin/update_engine_sideload" \
+-    "$platform_root/system/bin/hw/android.hardware.boot-service.mtk_recovery" \
+     "$platform_root/system/bin/hw/android.hardware.health-service.example_recovery" \
+-    "$platform_root/system/etc/init/android.hardware.boot-service.mtk_recovery.rc" \
+     "$platform_root/system/etc/init/android.hardware.health-service.example_recovery.rc" \
+     "$platform_root/system/etc/init/recovery-persist.rc" \
+     "$platform_root/system/etc/init/recovery-refresh.rc" \
+     "$platform_root/system/etc/init/servicemanager.recovery.rc" \
+     "$platform_root/system/etc/recovery.fstab" \
+     "$platform_root/system/etc/security/otacerts.zip" \
+-    "$platform_root/system/etc/vintf/manifest/android.hardware.boot-service.mtk.xml" \
++    "$platform_root/system/etc/init/android.hardware.boot-service.mtk_recovery.rc" \
+     "$platform_root/system/etc/vintf/manifest/android.hardware.health-service.example.xml" \
+     "$platform_root/system/lib64/librecovery_ui.so"
+ 
+@@ -98,6 +234,11 @@ if find "$platform_root/system/etc/vintf/manifest" -maxdepth 1 -type f \
+     exit 1
+ fi
+ 
++if ! grep -qF '<fqname>IBootControl/default</fqname>' "$stock_boot_control_manifest_destination"; then
++    echo "relocated AIDL BootControl VINTF fragment is invalid" >&2
++    exit 1
++fi
++
+ for essential in \
+     system/bin/init \
+     system/bin/linker64 \
+@@ -110,47 +251,200 @@ for essential in \
      fi
  done
  
@@ -1355,15 +3256,288 @@ index 2ab0354..75a8fc6 100755
  platform_module_count="$(find "$platform_root/lib/modules" -maxdepth 1 -type f -name '*.ko' | wc -l)"
  if [ "$platform_module_count" -ne 244 ]; then
      echo "pruned platform contains $platform_module_count modules; expected 244" >&2
-@@ -273,7 +384,7 @@ disable_avb_total_ramdisk_size="$(check_combined_ramdisk_size disable-avb "$disa
- build_vendor_boot() {
-     local image="$1" bootconfig="$2" platform_lz4="$3" recovery_lz4="$4"
-     local -a mkbootimg_args=(
--        --dtb "$STOCK_DTB"
+     exit 1
+ fi
+ 
+-"$MKBOOTFS" -d "${PRODUCT_OUT}/system" "$platform_root" > "$platform_pruned_cpio"
+-"$LZ4" -l -12 --favor-decSpeed -f "$platform_pruned_cpio" "$platform_pruned_lz4" >/dev/null
++pack_ramdisk() {
++    local root="$1" cpio="$2" lz4="$3"
+ 
+-total_ramdisk_size=$(( $(stat -c %s "$platform_pruned_lz4") + $(stat -c %s "$RECOVERY_LZ4") ))
+-if [ "$total_ramdisk_size" -ge 60000000 ]; then
+-    echo "combined vendor ramdisk is $total_ramdisk_size bytes; expected less than 60000000" >&2
+-    exit 1
+-fi
++    "$MKBOOTFS" -d "${PRODUCT_OUT}/system" "$root" > "$cpio"
++    "$LZ4" -l -12 --favor-decSpeed -f "$cpio" "$lz4" >/dev/null
++}
+ 
+-"$MKBOOTIMG" \
+-    --dtb "$STOCK_DTB" \
+-    --base 0x3fff8000 \
+-    --pagesize 4096 \
+-    --vendor_cmdline "bootopt=64S3,32N2,64N2 erofs.reserved_pages=64" \
+-    --header_version 4 \
+-    --kernel_offset 0x00008000 \
+-    --ramdisk_offset 0x26f08000 \
+-    --tags_offset 0x07c88000 \
+-    --dtb_offset 0x07c88000 \
+-    --vendor_ramdisk "$platform_pruned_lz4" \
+-    --ramdisk_type RECOVERY \
+-    --ramdisk_name recovery \
+-    --vendor_ramdisk_fragment "$RECOVERY_LZ4" \
+-    --vendor_boot "$unsigned_image"
++check_combined_ramdisk_size() {
++    local label="$1" platform_lz4="$2" recovery_lz4="$3" total
++
++    total=$(( $(stat -c %s "$platform_lz4") + $(stat -c %s "$recovery_lz4") ))
++    if [ "$total" -ge 60000000 ]; then
++        echo "${label} combined vendor ramdisk is $total bytes; expected less than 60000000" >&2
++        exit 1
++    fi
++    printf '%s\n' "$total"
++}
++
++strip_first_stage_avb_flags() {
++    local root="$1" fstab_file sanitized_file fstab_count=0
++
++    while IFS= read -r -d '' fstab_file; do
++        fstab_count=$((fstab_count + 1))
++        sanitized_file="${fstab_file}.disable-avb"
++        awk '
++            /^[[:space:]]*#/ || NF < 5 { print; next }
++            {
++                count = split($5, options, ",")
++                rebuilt = ""
++                for (i = 1; i <= count; i++) {
++                    option = options[i]
++                    if (option == "avb" || option ~ /^avb=/ || option ~ /^avb_keys=/) {
++                        continue
++                    }
++                    rebuilt = rebuilt == "" ? option : rebuilt "," option
++                }
++                $5 = rebuilt == "" ? "defaults" : rebuilt
++                print
++            }
++        ' "$fstab_file" > "$sanitized_file"
++        mv -f "$sanitized_file" "$fstab_file"
++    done < <(find "$root/first_stage_ramdisk" -maxdepth 1 -type f -name 'fstab.*' -print0)
++
++    if [ "$fstab_count" -eq 0 ]; then
++        echo "no first-stage fstab files found below $root" >&2
++        exit 1
++    fi
++}
++
++assert_no_first_stage_avb_flags() {
++    local root="$1" fstab_file fstab_count=0
++
++    while IFS= read -r -d '' fstab_file; do
++        fstab_count=$((fstab_count + 1))
++        if ! awk '
++            /^[[:space:]]*#/ || NF < 5 { next }
++            {
++                count = split($5, options, ",")
++                for (i = 1; i <= count; i++) {
++                    option = options[i]
++                    if (option == "avb" || option ~ /^avb=/ || option ~ /^avb_keys=/) {
++                        bad = 1
++                    }
++                }
++            }
++            END { exit bad ? 1 : 0 }
++        ' "$fstab_file"; then
++            echo "first-stage AVB flag remains in $fstab_file" >&2
++            exit 1
++        fi
++    done < <(find "$root/first_stage_ramdisk" -maxdepth 1 -type f -name 'fstab.*' -print0)
++
++    if [ "$fstab_count" -eq 0 ]; then
++        echo "no first-stage fstab files found below $root" >&2
++        exit 1
++    fi
++}
++
++pack_ramdisk "$platform_root" "$platform_pruned_cpio" "$platform_pruned_lz4"
++
++# Keep the standard image byte-for-byte independent of this override. The
++# alternate image removes only fs_mgr AVB options from the stock type-1
++# platform first-stage fstab. This is the fragment used for normal Android
++# boot; all block paths and other mount flags stay unchanged.
++mkdir -p "$disable_avb_platform_root"
++cp -a "$platform_root/." "$disable_avb_platform_root/"
++strip_first_stage_avb_flags "$disable_avb_platform_root"
++assert_no_first_stage_avb_flags "$disable_avb_platform_root"
++pack_ramdisk "$disable_avb_platform_root" "$disable_avb_platform_cpio" "$disable_avb_platform_lz4"
++
++total_ramdisk_size="$(check_combined_ramdisk_size standard "$platform_pruned_lz4" "$RECOVERY_LZ4")"
++disable_avb_total_ramdisk_size="$(check_combined_ramdisk_size disable-avb "$disable_avb_platform_lz4" "$RECOVERY_LZ4")"
++
++build_vendor_boot() {
++    local image="$1" bootconfig="$2" platform_lz4="$3" recovery_lz4="$4"
++    local -a mkbootimg_args=(
 +        --dtb "$patched_dtb"
-         --base 0x3fff8000
-         --pagesize 4096
-         --vendor_cmdline "bootopt=64S3,32N2,64N2 erofs.reserved_pages=64"
++        --base 0x3fff8000
++        --pagesize 4096
++        --vendor_cmdline "bootopt=64S3,32N2,64N2 erofs.reserved_pages=64"
++        --header_version 4
++        --kernel_offset 0x00008000
++        --ramdisk_offset 0x26f08000
++        --tags_offset 0x07c88000
++        --dtb_offset 0x07c88000
++        --vendor_ramdisk "$platform_lz4"
++        --ramdisk_type RECOVERY
++        --ramdisk_name recovery
++        --vendor_ramdisk_fragment "$recovery_lz4"
++    )
++
++    if [ -n "$bootconfig" ]; then
++        mkbootimg_args+=(--vendor_bootconfig "$bootconfig")
++    fi
++    mkbootimg_args+=(--vendor_boot "$image")
++    "$MKBOOTIMG" "${mkbootimg_args[@]}"
++    "$AVBTOOL" add_hash_footer \
++        --image "$image" \
++        --partition_size 67108864 \
++        --partition_name vendor_boot \
++        --prop "com.android.build.vendor_boot.fingerprint:${fingerprint}"
++}
+ 
+ fingerprint="$(cat "${PRODUCT_OUT}/build_fingerprint.txt")"
+-"$AVBTOOL" add_hash_footer \
+-    --image "$unsigned_image" \
+-    --partition_size 67108864 \
+-    --partition_name vendor_boot \
+-    --prop "com.android.build.vendor_boot.fingerprint:${fingerprint}"
++build_vendor_boot "$unsigned_image" "" "$platform_pruned_lz4" "$RECOVERY_LZ4"
++
++# LK was replaced to permit fastboot flashing on affected devices, but Android
++# still receives LK's locked-state boot properties. A bootconfig assignment
++# with := takes precedence over the same property supplied earlier in boot.
++cat > "$disable_avb_bootconfig" <<'EOF'
++androidboot.vbmeta.device_state := "unlocked"
++androidboot.verifiedbootstate := "orange"
++androidboot.flash.locked := "0"
++EOF
++build_vendor_boot "$disable_avb_unsigned_image" "$disable_avb_bootconfig" \
++    "$disable_avb_platform_lz4" "$RECOVERY_LZ4"
+ 
+ mkdir -p "$(dirname "$OUTPUT_IMAGE")"
+ mv -f "$unsigned_image" "$OUTPUT_IMAGE"
+ sha256sum "$OUTPUT_IMAGE" > "${OUTPUT_IMAGE}.sha256"
++mv -f "$disable_avb_unsigned_image" "$DISABLE_AVB_OUTPUT_IMAGE"
++sha256sum "$DISABLE_AVB_OUTPUT_IMAGE" > "${DISABLE_AVB_OUTPUT_IMAGE}.sha256"
++
++# avbtool resolves the hash descriptor's partition name relative to the image
++# being checked. Validate this variant under its actual partition filename,
++# rather than accidentally reading the standard product/vendor_boot.img alias.
++test "$(stat -c %s "$DISABLE_AVB_OUTPUT_IMAGE")" = 67108864
++cp -fp "$DISABLE_AVB_OUTPUT_IMAGE" "$disable_avb_verify_image"
++"$AVBTOOL" verify_image --image "$disable_avb_verify_image"
++python3 "$UNPACK_BOOTIMG" --boot_img "$DISABLE_AVB_OUTPUT_IMAGE" \
++    --out "$disable_avb_inspect_dir" >/dev/null
++for property in \
++    'androidboot.vbmeta.device_state := "unlocked"' \
++    'androidboot.verifiedbootstate := "orange"' \
++    'androidboot.flash.locked := "0"'; do
++    grep -qxF "$property" "$disable_avb_inspect_dir/bootconfig"
++done
+ 
+ # OrangeFox creates these names before this post-build step. Replace both
+ # whole-image outputs so an ordinary vendorbootimage build cannot leave a
+@@ -166,8 +460,11 @@ rm -f \
+     "${PRODUCT_OUT}/OrangeFox-R12.0-Unofficial-rodin.zip.md5"
+ 
+ printf 'system-compatible vendor_boot: %s\n' "$OUTPUT_IMAGE"
++printf 'disable-avb vendor_boot: %s\n' "$DISABLE_AVB_OUTPUT_IMAGE"
++printf 'firmware variant: %s\n' "$FIRMWARE_VARIANT"
+ printf 'pruned stock platform fragment: %s bytes (LZ4, %s stock modules)\n' \
+     "$(stat -c %s "$platform_pruned_lz4")" "$platform_module_count"
+ printf 'recovery fragment: %s bytes (LZ4, %s modules)\n' "$(stat -c %s "$RECOVERY_LZ4")" "$module_count"
+ printf 'combined vendor ramdisk: %s bytes\n' "$total_ramdisk_size"
++printf 'disable-avb combined vendor ramdisk: %s bytes\n' "$disable_avb_total_ramdisk_size"
+ cat "${OUTPUT_IMAGE}.sha256"
+diff --git a/desired/tools/import-global-firmware-inputs.sh b/tools/import-global-firmware-inputs.sh
+new file mode 100755
+index 0000000..b5296ac
+--- /dev/null
++++ b/tools/import-global-firmware-inputs.sh
+@@ -0,0 +1,74 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++DEVICE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
++TOP_DIR="$(cd -- "${DEVICE_DIR}/../../.." && pwd -P)"
++UNPACK_BOOTIMG="${TOP_DIR}/system/tools/mkbootimg/unpack_bootimg.py"
++
++EXPECTED_VENDOR_BOOT_SIZE=67108864
++EXPECTED_VENDOR_BOOT_SHA256="72b8ae7637af1924de8312855790de91f99abbc9c8c8ab6003ddce14abc4d956"
++EXPECTED_PLATFORM_SIZE=29235080
++EXPECTED_PLATFORM_SHA256="349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731"
++EXPECTED_DTB_SHA256="38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae"
++DESTINATION="${DEVICE_DIR}/prebuilt/global/vendor_ramdisk00"
++
++die() {
++    echo "ERROR: $*" >&2
++    exit 1
++}
++
++check_size() {
++    local path="$1" expected="$2" actual
++    actual="$(stat -c %s "$path")"
++    [[ "$actual" == "$expected" ]] || \
++        die "unexpected size for $path: $actual (expected $expected)"
++}
++
++check_sha256() {
++    local path="$1" expected="$2" actual
++    actual="$(sha256sum "$path" | awk '{print $1}')"
++    [[ "$actual" == "$expected" ]] || \
++        die "unexpected SHA-256 for $path: $actual"
++}
++
++if [[ $# -ne 1 ]]; then
++    echo "Usage: $0 /path/to/rodin_global_images_OS3.0.301.0.WOJMIXM_16.0/images/vendor_boot.img" >&2
++    exit 2
++fi
++
++INPUT_VENDOR_BOOT="$1"
++[[ -f "$INPUT_VENDOR_BOOT" ]] || die "vendor_boot image not found: $INPUT_VENDOR_BOOT"
++[[ -f "$UNPACK_BOOTIMG" ]] || die "unpack_bootimg.py not found: $UNPACK_BOOTIMG"
++
++for command_name in mktemp python3 sha256sum stat awk install mv; do
++    command -v "$command_name" >/dev/null 2>&1 || die "required host command not found: $command_name"
++done
++
++# This importer is intentionally pinned to the Global 3.0.301 release. Kernel
++# modules in its platform ramdisk differ from the CN 3.0.303 base and cannot be
++# safely substituted with a fragment from another firmware revision.
++check_size "$INPUT_VENDOR_BOOT" "$EXPECTED_VENDOR_BOOT_SIZE"
++check_sha256 "$INPUT_VENDOR_BOOT" "$EXPECTED_VENDOR_BOOT_SHA256"
++
++work_dir="$(mktemp -d "${TMPDIR:-/tmp}/rodin-global-vendor-boot.XXXXXX")"
++trap 'rm -rf "$work_dir"' EXIT
++python3 "$UNPACK_BOOTIMG" --boot_img "$INPUT_VENDOR_BOOT" --out "$work_dir"
++
++platform_ramdisk="${work_dir}/vendor_ramdisk00"
++dtb="${work_dir}/dtb"
++[[ -f "$platform_ramdisk" ]] || die "missing type-1 platform fragment after unpacking"
++[[ -f "$dtb" ]] || die "missing DTB after unpacking"
++check_size "$platform_ramdisk" "$EXPECTED_PLATFORM_SIZE"
++check_sha256 "$platform_ramdisk" "$EXPECTED_PLATFORM_SHA256"
++check_sha256 "$dtb" "$EXPECTED_DTB_SHA256"
++
++destination_dir="$(dirname "$DESTINATION")"
++mkdir -p "$destination_dir"
++temporary_destination="${destination_dir}/.vendor_ramdisk00.$$"
++trap 'rm -rf "$work_dir" "$temporary_destination"' EXIT
++install -m 0644 "$platform_ramdisk" "$temporary_destination"
++check_sha256 "$temporary_destination" "$EXPECTED_PLATFORM_SHA256"
++mv -f "$temporary_destination" "$DESTINATION"
++
++echo "Imported Global OS3.0.301.0.WOJMIXM platform ramdisk: $DESTINATION"
++sha256sum "$DESTINATION"
 diff --git a/tools/patch-recovery-touch-modules.sh b/tools/patch-recovery-touch-modules.sh
 index 2ee711a..645b786 100755
 --- a/tools/patch-recovery-touch-modules.sh
@@ -1495,7 +3669,7 @@ index 2ee711a..645b786 100755
  patch_return_zero "$GOODIX" $((0x26e90)) "goodix:scp_tp_get_reserve_mem"
  patch_return_zero "$GOODIX" $((0x26f64)) "goodix:scp_tp_ipi_send"
  patch_return_zero "$GOODIX" $((0x27014)) "goodix:scp_tp_sendparam"
-diff --git a/tools/patch-vendor-boot-dtb.py b/tools/patch-vendor-boot-dtb.py
+diff --git a/desired/tools/patch-vendor-boot-dtb.py b/tools/patch-vendor-boot-dtb.py
 new file mode 100644
 index 0000000..9228378
 --- /dev/null
@@ -1609,37 +3783,56 @@ index 0000000..9228378
 +if __name__ == "__main__":
 +    raise SystemExit(main())
 diff --git a/tools/verify-build-inputs.sh b/tools/verify-build-inputs.sh
-index 1f960e1..8d00b9a 100755
+index 4550714..24ae103 100755
 --- a/tools/verify-build-inputs.sh
 +++ b/tools/verify-build-inputs.sh
-@@ -15,7 +15,7 @@ case "${RODIN_FIRMWARE_VARIANT:-cn}" in
-     *) fail "unsupported RODIN_FIRMWARE_VARIANT: ${RODIN_FIRMWARE_VARIANT} (expected cn or global)" ;;
- esac
+@@ -10,7 +10,12 @@ fail() {
+     failures=$((failures + 1))
+ }
  
 -for command_name in bash cut file git grep python3 sed sha256sum sort stat; do
++case "${RODIN_FIRMWARE_VARIANT:-cn}" in
++    cn|global) ;;
++    *) fail "unsupported RODIN_FIRMWARE_VARIANT: ${RODIN_FIRMWARE_VARIANT} (expected cn or global)" ;;
++esac
++
 +for command_name in bash cut fdtget fdtput file git grep python3 sed sha256sum sort stat strings; do
      command -v "${command_name}" >/dev/null 2>&1 || \
          fail "required host command not found: ${command_name}"
  done
-@@ -74,11 +74,12 @@ check_contains() {
+@@ -68,11 +73,15 @@ check_contains() {
+ [[ -f "${TOP_DIR}/build/envsetup.sh" ]] || fail "not an OrangeFox source root: ${TOP_DIR}"
  check_file "${DEVICE_DIR}/patches/orangefox-recovery.patch"
  check_file "${DEVICE_DIR}/patches/orangefox-build-make.patch"
- check_file "${DEVICE_DIR}/tools/import-global-firmware-inputs.sh"
++check_file "${DEVICE_DIR}/patches/orangefox-vendor-twrp.patch"
++check_file "${DEVICE_DIR}/tools/import-global-firmware-inputs.sh"
 +check_file "${DEVICE_DIR}/tools/patch-vendor-boot-dtb.py"
  check_file "${DEVICE_DIR}/manifests/device-blobs.sha256"
  check_file "${DEVICE_DIR}/manifests/orangefox-fox_14.1-pinned.xml"
  check_sha256 "${DEVICE_DIR}/patches/orangefox-build-make.patch" 5f2d3f43a4d78eee6d560a4a169df30fc95de6fa2ed294e3210e684a641a8329
--check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 4159fe49b39cfacb3950666f55701b4fa7888fc8ac6add43a6075954d3bdfd82
--check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 38c8ba245974696fb5352040b25fb189486e00f987381a01d45802df1344be96
-+check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 2e4af1a0511131b1364bdea36233b30ab6a258389b61e262fc214b624cddfa39
+-check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" d36b4ef38558113296fe4353d8374f5b8f700d829531f2b7139b74c7f7fdcfd9
+-check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 24054779376a52e037454daba105d5153202d92104ddf535f65fd58c06e3abe5
++check_sha256 "${DEVICE_DIR}/patches/orangefox-vendor-twrp.patch" d845e7cc38d612fa838db94da6336820b48d2e4251e109ee7b4ef2f361d22158
++check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 104b029c13018ac13dbb1420fc9186901be210b00817b44689815a3a010bc74a
 +check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" b4d8a7b2457d2a61ff77313e25d1822435d2174cb095d0faa42f7f28e0800b23
  
  if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
      if ! python3 "${DEVICE_DIR}/tools/verify-source-manifest.py" "${TOP_DIR}" \
-@@ -105,6 +106,23 @@ check_sha256 "${DEVICE_DIR}/prebuilt/vendor_boot_stock.img" 499bb470719b790baf90
+@@ -81,6 +90,8 @@ if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
+     fi
+     check_revision "${TOP_DIR}/vendor/recovery" \
+         0d7959e6538db5ddfff892cf7dfe207c68b0b753 "OrangeFox vendor/recovery"
++    check_revision "${TOP_DIR}/external/se_omapi" \
++        9ea6e4a9ecfe04ffb82767d7cbcab3e8dc6295af "OrangeFox external/se_omapi"
+ fi
+ 
+ while IFS= read -r relative; do
+@@ -95,6 +106,25 @@ check_sha256 "${DEVICE_DIR}/prebuilt/dtb/mt6899-rodin.dtb" 38369239c984fc191e36d
+ check_sha256 "${DEVICE_DIR}/prebuilt/dtbo.img" ccd008dc7336301b7cc6fab7b59400b3debd2866f055f085e61696dbc7c0f298
+ check_sha256 "${DEVICE_DIR}/prebuilt/vendor_boot_stock.img" 499bb470719b790baf90f8b49a0340e09b7ed983f3508736a86a6d1e9b503f47
  check_sha256 "${DEVICE_DIR}/prebuilt/vendor_ramdisk00" 192977d50a121f7a5ddfab0212488ef0dbb0326cad802ce9d664649967a9845c
- check_size "${DEVICE_DIR}/prebuilt/global/vendor_ramdisk00" 29235080
- check_sha256 "${DEVICE_DIR}/prebuilt/global/vendor_ramdisk00" 349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731
++check_size "${DEVICE_DIR}/prebuilt/global/vendor_ramdisk00" 29235080
++check_sha256 "${DEVICE_DIR}/prebuilt/global/vendor_ramdisk00" 349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731
 +for module in \
 +    focaltech_touch_rodin.ko \
 +    goodix_core_rodin.ko \
@@ -1660,7 +3853,7 @@ index 1f960e1..8d00b9a 100755
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/scp.ko" ebae9554467e148256cfbab90f0b6d7943d2818ae0cf09bad8aec650bbd99310
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/goodix_core_rodin.ko" 3c2fe7db061743134b715e5a7c361690c3fa36cfacb9c15c1e0bb122e51ac966
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/focaltech_touch_rodin.ko" da967ce3f94ecc81153ee91f7e06a2b48eda0526b857688016ef660844bc70b2
-@@ -140,6 +158,34 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
+@@ -130,6 +160,149 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
  check_contains "${DEVICE_DIR}/fox_callback.sh" \
      'focaltech_touch_rodin.ko|goodix_core_rodin.ko' \
      "FocalTech module is not retained in the final ramdisk"
@@ -1677,11 +3870,11 @@ index 1f960e1..8d00b9a 100755
 +    'RODIN_FIRMWARE_VARIANT=$(RODIN_FIRMWARE_VARIANT)' \
 +    "Recovery callback does not receive the selected firmware profile"
 +check_contains "${DEVICE_DIR}/BoardConfig.mk" \
-+    'ifeq ($(RODIN_FIRMWARE_VARIANT),global)' \
-+    "Global DRM screen-blank workaround profile is missing"
-+check_contains "${DEVICE_DIR}/BoardConfig.mk" \
-+    'TW_NO_SCREEN_BLANK := true' \
-+    "Global DRM screen-blank workaround is missing"
++    'TW_DRM_BLANK_KEEP_PIPELINE := true' \
++    "Global retained DRM pipeline setting is missing"
++if grep -qF -- 'TW_NO_SCREEN_BLANK' "${DEVICE_DIR}/BoardConfig.mk"; then
++    fail "rodin must retain the standard DRM screen-blank state machine"
++fi
 +check_contains "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
 +    'GLOBAL_SCP_STOCK_SHA256' \
 +    "Global touch patch hashes are missing"
@@ -1692,13 +3885,60 @@ index 1f960e1..8d00b9a 100755
 +        "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh"; then
 +    fail "Recovery module patcher uses perl, which Android PATH rejects during image assembly"
 +fi
- check_contains "${DEVICE_DIR}/Android.bp" \
-     'name: "rodin_android.hardware.secure_element-V1-ndk"' \
-     "Recovery secure-element prebuilt module is missing"
-@@ -194,6 +240,40 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
- check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
-     'verify_image --image "$disable_avb_verify_image"' \
-     "disable-avb vendor_boot AVB footer is not verified"
++check_contains "${DEVICE_DIR}/Android.bp" \
++    'name: "rodin_android.hardware.secure_element-V1-ndk"' \
++    "Recovery secure-element prebuilt module is missing"
++check_contains "${DEVICE_DIR}/Android.bp" \
++    'name: "rodin_android.se.omapi-V1-ndk"' \
++    "Recovery OMAPI prebuilt module is missing"
++check_contains "${DEVICE_DIR}/Android.bp" \
++    '"rodin_android.se.omapi-V1-ndk"' \
++    "OMAPI bridge is not linked against the recovery prebuilt"
++check_contains "${DEVICE_DIR}/Android.bp" \
++    '"android.hardware.secure_element-V1-ndk-source"' \
++    "Secure-element AIDL generated headers are missing"
++check_contains "${DEVICE_DIR}/Android.bp" \
++    '"android.se.omapi-V1-ndk-source"' \
++    "OMAPI AIDL generated headers are missing"
++check_contains "${DEVICE_DIR}/Android.bp" \
++    '"librodin_libcxx_compat"' \
++    "OMAPI bridge is not linked against the libc++ compatibility shim"
++check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
++    'RODIN_FIRMWARE_VARIANT' \
++    "firmware profile selector missing from vendor_boot repacker"
++check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
++    'stock_boot_control_service=' \
++    "stock AIDL BootControl service is not retained by the vendor_boot repacker"
++check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
++    'stock_boot_control_manifest_destination="$platform_root/vendor/etc/vintf/manifest/android.hardware.boot-service.mtk.xml"' \
++    "AIDL BootControl VINTF fragment is not relocated to the device manifest path"
++check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
++    'pruned platform still contains a device VINTF fragment under /system' \
++    "vendor_boot repacker does not reject device VINTF fragments under /system"
++check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
++    'DEFAULT_DISABLE_AVB_OUTPUT_IMAGE' \
++    "disable-avb vendor_boot output is not defined"
++check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
++    '--vendor_bootconfig "$bootconfig"' \
++    "disable-avb vendor_boot bootconfig is not packed"
++check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
++    'androidboot.vbmeta.device_state := "unlocked"' \
++    "disable-avb vendor_boot does not override vbmeta device state"
++check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
++    'androidboot.verifiedbootstate := "orange"' \
++    "disable-avb vendor_boot does not override verified boot state"
++check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
++    'androidboot.flash.locked := "0"' \
++    "disable-avb vendor_boot does not override flash lock state"
++check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
++    'strip_first_stage_avb_flags' \
++    "disable-avb vendor_boot does not remove first-stage AVB fs_mgr flags"
++check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
++    'platform first-stage fstab' \
++    "disable-avb vendor_boot does not target the type-1 platform fstab"
++check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
++    'verify_image --image "$disable_avb_verify_image"' \
++    "disable-avb vendor_boot AVB footer is not verified"
 +check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
 +    'verify_recovery_elf' \
 +    "vendor_boot repacker does not validate the recovery init ELF"
@@ -1733,10 +3973,45 @@ index 1f960e1..8d00b9a 100755
 +check_contains "${DEVICE_DIR}/.github/workflows/build.yml" \
 +    "firmware_variant:" \
 +    "CI cannot select a single firmware profile for manual builds"
- check_contains "${DEVICE_DIR}/BoardConfig.mk" \
-     'OF_USE_AIDL_BOOT_CONTROL := 1' \
-     "OrangeFox is not configured to use AIDL BootControl"
-@@ -248,6 +328,12 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
++check_contains "${DEVICE_DIR}/BoardConfig.mk" \
++    'OF_USE_AIDL_BOOT_CONTROL := 1' \
++    "OrangeFox is not configured to use AIDL BootControl"
++check_contains "${DEVICE_DIR}/BoardConfig.mk" \
++    'OF_USE_DMCTL := 1' \
++    "OrangeFox dmctl support is not enabled for FBE Format Data"
++check_contains "${DEVICE_DIR}/recovery/root/system/etc/twrp.flags" \
++    '/dev/block/rodin-usb-otg-unresolved' \
++    "USB OTG must use the dynamic USB-bus resolver sentinel"
++check_contains "${DEVICE_DIR}/recovery/root/init.recovery.bootctl.rc" \
++    'service vendor.boot-default /system/bin/hw/android.hardware.boot-service.mtk_recovery' \
++    "stock AIDL BootControl recovery service definition missing"
++check_contains "${DEVICE_DIR}/recovery/root/init.recovery.bootctl.rc" \
++    'setenv LD_PRELOAD /system/lib64/librodin_libcxx_compat.so' \
++    "stock AIDL BootControl cannot load the libc++ compatibility shim"
++check_contains "${DEVICE_DIR}/recovery/root/init.recovery.mt6899.rc" \
++    'import /init.recovery.bootctl.rc' \
++    "stock AIDL BootControl recovery rc is not imported"
++check_contains "${DEVICE_DIR}/recovery/root/init.recovery.keymint.rc" \
++    'service rodin.omapi_bridge /system/bin/rodin_omapi_bridge' \
++    "OMAPI bridge service definition missing"
++check_contains "${DEVICE_DIR}/recovery/root/init.recovery.keymint.rc" \
++    'setenv LD_LIBRARY_PATH /vendor/lib64:/system/lib64' \
++    "OMAPI bridge cannot search vendor libraries"
++check_contains "${DEVICE_DIR}/recovery/root/init.recovery.keymint.rc" \
++    'start vendor.weaver_nxp' \
++    "Weaver is not started with the TEE services"
+ 
+ if [[ -f "${DEVICE_DIR}/manifests/device-blobs.sha256" ]] && \
+         ! (cd "${TOP_DIR}" && sha256sum --check --quiet "${DEVICE_DIR}/manifests/device-blobs.sha256"); then
+@@ -142,6 +315,7 @@ for script in \
+     "${DEVICE_DIR}/tools/apply-orangefox-patches.sh" \
+     "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+     "${DEVICE_DIR}/tools/collect-compat-report.sh" \
++    "${DEVICE_DIR}/tools/import-global-firmware-inputs.sh" \
+     "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
+     "${DEVICE_DIR}/tools/verify-build-inputs.sh"; do
+     check_file "$script"
+@@ -156,12 +330,24 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
          fail "Python syntax check failed: tools/verify-source-manifest.py"
  fi
  
@@ -1749,49 +4024,48 @@ index 1f960e1..8d00b9a 100755
  if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
      for marker in \
          OF_SKIP_POST_DECRYPT_THEME_RELOAD \
-@@ -255,6 +341,9 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
+         OF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT \
          fallback_face \
-         processKeyChord \
-         Resolve_UsbOtg_Block_Device \
+-        processKeyChord; do
++        processKeyChord \
++        Resolve_UsbOtg_Block_Device \
 +        tw_usb_otg_host_request \
 +        'USB OTG host mode requested by user' \
 +        'TARGET_OUT_SHARED_LIBRARIES)/libprocessgroup_setup.so' \
-         "skipping logical partition alias" \
-         "Decrypted userdata mapper is still present"; do
++        "skipping logical partition alias" \
++        "Decrypted userdata mapper is still present"; do
          search_tree "$marker" "${TOP_DIR}/bootable/recovery" || \
-@@ -310,6 +399,9 @@ check_contains "${TOP_DIR}/system/vold/Weaver1.cpp" \
- check_contains "${TOP_DIR}/vendor/twrp/config/BoardConfigSoong.mk" \
-     'include bootable/recovery/orangefox_soong.mk' \
-     "OrangeFox vendor/twrp Soong include is missing"
-+check_contains "${TOP_DIR}/vendor/twrp/build/soong/Android.bp" \
-+    'tw_no_screen_blank' \
-+    "OrangeFox Soong does not export TW_NO_SCREEN_BLANK"
+             fail "OrangeFox source patch marker missing: $marker"
+     done
+@@ -206,6 +392,31 @@ if [[ -d "${TOP_DIR}/build/make" ]]; then
+     fi
+ fi
  
++check_contains "${TOP_DIR}/system/vold/Android.bp" \
++    '"android.hardware.weaver-V2-ndk"' \
++    "OrangeFox system/vold AIDL Weaver dependency is missing"
++check_contains "${TOP_DIR}/system/vold/Weaver1.cpp" \
++    'AServiceManager_waitForService' \
++    "OrangeFox system/vold AIDL Weaver support is missing"
++check_contains "${TOP_DIR}/vendor/twrp/config/BoardConfigSoong.mk" \
++    'include bootable/recovery/orangefox_soong.mk' \
++    "OrangeFox vendor/twrp Soong include is missing"
++check_contains "${TOP_DIR}/vendor/twrp/config/BoardConfigSoong.mk" \
++    'tw_drm_blank_keep_pipeline := $(TW_DRM_BLANK_KEEP_PIPELINE)' \
++    "Global retained DRM pipeline Soong export is missing"
++check_contains "${TOP_DIR}/vendor/twrp/build/soong/Android.bp" \
++    '-DTW_DRM_BLANK_KEEP_PIPELINE' \
++    "Global retained DRM pipeline compile flag is missing"
++check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
++    'DRM blank request:' \
++    "Atomic DRM blank diagnostics are missing"
++check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
++    'DRM blank retained pipeline: ACTIVE=' \
++    "Global retained atomic DRM blank path is missing"
++check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
++    'DRM shutdown: pipeline torn down before resource release' \
++    "Global DRM shutdown teardown is missing"
++
  if command -v file >/dev/null 2>&1 && [[ -f "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" ]]; then
      file "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" | grep -q 'TrueType Font data' || \
---- a/prebuilt/README.md
-+++ b/prebuilt/README.md
-@@ -9,6 +9,7 @@
- | `dtb/mt6899-rodin.dtb` | DTB from `vendor_boot_a` | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
- | `dtbo.img` | direct copy of `dtbo_a` | `ccd008dc7336301b7cc6fab7b59400b3debd2866f055f085e61696dbc7c0f298` |
- | `global/vendor_ramdisk00` | locally extracted type-1 platform fragment from Global OS3.0.301.0.WOJMIXM `vendor_boot.img` | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
-+| `global/modules/*.ko` | matching Global OS3.0.301.0.WOJMIXM `vendor_dlkm` modules | per-file checks in `verify-build-inputs.sh` |
- | `vendor_boot_stock.img` | direct copy of `vendor_boot_a` | `499bb470719b790baf90f8b49a0340e09b7ed983f3508736a86a6d1e9b503f47` |
- | `vendor_ramdisk00` | platform fragment from `vendor_boot_a` | `192977d50a121f7a5ddfab0212488ef0dbb0326cad802ce9d664649967a9845c` |
- 
-@@ -30,10 +31,11 @@
- 
- The default build profile is `cn`, which uses `vendor_ramdisk00`. Global
- OS3.0.301.0.WOJMIXM must instead use `global/vendor_ramdisk00`; select it with
--`RODIN_FIRMWARE_VARIANT=global`. The Global profile changes only the retained
--type-1 platform fragment. Its DTB, fstab, init, SELinux data, and stock
--recovery fragment were verified identical to the CN base, so the OrangeFox
--recovery resources remain shared.
-+`RODIN_FIRMWARE_VARIANT=global`. The Global profile changes the retained type-1
-+platform fragment and replaces the seven Recovery-only touch, haptic, and eSE
-+modules from `global/modules/` before the recovery fragment is packed. Its DTB,
-+fstab, init, SELinux data, and stock recovery fragment were verified identical
-+to the CN base, so the remaining OrangeFox recovery resources stay shared.
- 
- The textual device-tree patch deliberately does not embed the 29 MiB Global
- fragment. Populate it from the matching full firmware package before using the
+         fail "MiSans must use TrueType glyf outlines, not CFF"

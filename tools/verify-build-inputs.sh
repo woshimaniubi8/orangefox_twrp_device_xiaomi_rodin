@@ -73,12 +73,14 @@ check_contains() {
 [[ -f "${TOP_DIR}/build/envsetup.sh" ]] || fail "not an OrangeFox source root: ${TOP_DIR}"
 check_file "${DEVICE_DIR}/patches/orangefox-recovery.patch"
 check_file "${DEVICE_DIR}/patches/orangefox-build-make.patch"
+check_file "${DEVICE_DIR}/patches/orangefox-vendor-twrp.patch"
 check_file "${DEVICE_DIR}/tools/import-global-firmware-inputs.sh"
 check_file "${DEVICE_DIR}/tools/patch-vendor-boot-dtb.py"
 check_file "${DEVICE_DIR}/manifests/device-blobs.sha256"
 check_file "${DEVICE_DIR}/manifests/orangefox-fox_14.1-pinned.xml"
 check_sha256 "${DEVICE_DIR}/patches/orangefox-build-make.patch" 5f2d3f43a4d78eee6d560a4a169df30fc95de6fa2ed294e3210e684a641a8329
-check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 2e4af1a0511131b1364bdea36233b30ab6a258389b61e262fc214b624cddfa39
+check_sha256 "${DEVICE_DIR}/patches/orangefox-vendor-twrp.patch" d845e7cc38d612fa838db94da6336820b48d2e4251e109ee7b4ef2f361d22158
+check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 104b029c13018ac13dbb1420fc9186901be210b00817b44689815a3a010bc74a
 check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" b4d8a7b2457d2a61ff77313e25d1822435d2174cb095d0faa42f7f28e0800b23
 
 if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
@@ -171,11 +173,11 @@ check_contains "${DEVICE_DIR}/BoardConfig.mk" \
     'RODIN_FIRMWARE_VARIANT=$(RODIN_FIRMWARE_VARIANT)' \
     "Recovery callback does not receive the selected firmware profile"
 check_contains "${DEVICE_DIR}/BoardConfig.mk" \
-    'ifeq ($(RODIN_FIRMWARE_VARIANT),global)' \
-    "Global DRM screen-blank workaround profile is missing"
-check_contains "${DEVICE_DIR}/BoardConfig.mk" \
-    'TW_NO_SCREEN_BLANK := true' \
-    "Global DRM screen-blank workaround is missing"
+    'TW_DRM_BLANK_KEEP_PIPELINE := true' \
+    "Global retained DRM pipeline setting is missing"
+if grep -qF -- 'TW_NO_SCREEN_BLANK' "${DEVICE_DIR}/BoardConfig.mk"; then
+    fail "rodin must retain the standard DRM screen-blank state machine"
+fi
 check_contains "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
     'GLOBAL_SCP_STOCK_SHA256' \
     "Global touch patch hashes are missing"
@@ -399,9 +401,21 @@ check_contains "${TOP_DIR}/system/vold/Weaver1.cpp" \
 check_contains "${TOP_DIR}/vendor/twrp/config/BoardConfigSoong.mk" \
     'include bootable/recovery/orangefox_soong.mk' \
     "OrangeFox vendor/twrp Soong include is missing"
+check_contains "${TOP_DIR}/vendor/twrp/config/BoardConfigSoong.mk" \
+    'tw_drm_blank_keep_pipeline := $(TW_DRM_BLANK_KEEP_PIPELINE)' \
+    "Global retained DRM pipeline Soong export is missing"
 check_contains "${TOP_DIR}/vendor/twrp/build/soong/Android.bp" \
-    'tw_no_screen_blank' \
-    "OrangeFox Soong does not export TW_NO_SCREEN_BLANK"
+    '-DTW_DRM_BLANK_KEEP_PIPELINE' \
+    "Global retained DRM pipeline compile flag is missing"
+check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
+    'DRM blank request:' \
+    "Atomic DRM blank diagnostics are missing"
+check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
+    'DRM blank retained pipeline: ACTIVE=' \
+    "Global retained atomic DRM blank path is missing"
+check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
+    'DRM shutdown: pipeline torn down before resource release' \
+    "Global DRM shutdown teardown is missing"
 
 if command -v file >/dev/null 2>&1 && [[ -f "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" ]]; then
     file "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" | grep -q 'TrueType Font data' || \

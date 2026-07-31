@@ -135,27 +135,33 @@ adb shell 'file /twres/fonts/MiSans.ttf'
 -DOF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT=1
 ```
 
-## 10. Global 按电源后无法亮屏
+## 10. Global 锁屏后屏幕仍亮或无法唤醒
 
-若短按电源后屏幕熄灭、再次短按仍黑屏，但 `init.svc.recovery=running`，则不是
-OrangeFox 进程崩溃。Global 6.6.89 的 MTK DRM 可接受 atomic CRTC blank，却可能无法在
-对应 enable commit 后恢复面板。
+Global 仍使用标准的 `blanktimer -> gr_fb_blank() -> atomic DRM` 链路，不使用亮度归零
+workaround。它只在完成首次完整 atomic setup 后，将后续锁屏/唤醒提交缩小为 CRTC
+`ACTIVE=0/1`，保留 connector、mode 和 plane binding；这修复的是 Global stock 6.6.89 的
+完整 teardown/rebuild 后无法恢复面板的问题，而非绕开锁屏链路。
+Recovery 退出时则会先完整 teardown，再释放 mode blob 和 framebuffer，避免仍被 DRM 状态
+引用的资源被提前释放。
 
-当前 Global profile 通过 `TW_NO_SCREEN_BLANK` 避开该路径：锁屏 overlay、屏幕超时和
-用户保存的亮度设置都保留；Recovery 仅向已验证的
-`/sys/devices/virtual/backlight/panel1-backlight/brightness` 写入 `0`，唤醒时恢复先前亮度。
-CN 不应用这个 workaround。刷入新 Global 镜像后，应连续短按电源两次验证黑屏和亮屏均正常。
+不要定义 `TW_NO_SCREEN_BLANK`：它会跳过 CRTC blank，并移除“屏幕关闭时普通输入不应唤醒”的
+保护，导致日志中出现 `brightness=0` 后立即恢复 `brightness=1000`，表现为已锁屏但屏幕仍亮。
 
-本问题的日志运行在 `6.6.139-EVONIX`，而 Global 构建输入固定为 stock
-`6.6.89`。此 workaround 不替换内核或模块，只避免 DRM CRTC 状态转换；其他异常不能据此
-视为已适配第三方内核，仍应在匹配的 stock Global 固件上回归触摸、FBE、OTG 和正常系统启动。
+先在与镜像匹配的 stock 固件上测试。`6.6.139-EVONIX-COS-V3.0` 等第三方内核不能用于判断
+Global `6.6.89` 输入的显示兼容性。新的 Recovery 会在真实 atomic commit 处记录请求方向、
+connector/CRTC/plane 标识及返回值；锁屏和唤醒各应出现一行
+`DRM blank retained pipeline: ACTIVE=0` 或 `ACTIVE=1`，随后为成功 commit。若 stock Global
+仍无法唤醒，保留这组日志再修正 atomic 属性，不能重新启用亮度替代路径。
 
-若新镜像仍复现，先在黑屏且 ADB 仍在线时保存以下只读证据，不要强制重启后覆盖日志：
+从 ADB 进行一次可重复验证，再用物理电源键重复一次：
 
 ```bash
-adb shell 'getprop init.svc.recovery; cat /sys/devices/virtual/backlight/panel1-backlight/brightness'
+adb shell input keyevent 26
+sleep 2
+adb shell input keyevent 26
 adb pull /tmp/recovery.log logs/global-screen-wake-recovery.log
 adb shell dmesg > logs/global-screen-wake-dmesg.txt
+adb logcat -b kernel -d > logs/global-screen-wake-kernel.log
 ```
 
 ## 11. Recovery 正常但系统无法启动

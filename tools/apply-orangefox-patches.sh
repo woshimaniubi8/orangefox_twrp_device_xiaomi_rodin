@@ -5,8 +5,10 @@ DEVICE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 TOP_DIR="${1:-$(cd -- "${DEVICE_DIR}/../../.." && pwd -P)}"
 RECOVERY_DIR="${TOP_DIR}/bootable/recovery"
 BUILD_DIR="${TOP_DIR}/build/make"
+VENDOR_TWRP_DIR="${TOP_DIR}/vendor/twrp"
 RECOVERY_PATCH="${DEVICE_DIR}/patches/orangefox-recovery.patch"
 BUILD_PATCH="${DEVICE_DIR}/patches/orangefox-build-make.patch"
+VENDOR_TWRP_PATCH="${DEVICE_DIR}/patches/orangefox-vendor-twrp.patch"
 
 apply_patch_once() {
     local repository="$1" patch_file="$2" label="$3"
@@ -30,6 +32,7 @@ apply_patch_once() {
 }
 
 apply_patch_once "${BUILD_DIR}" "${BUILD_PATCH}" "OrangeFox build/make"
+apply_patch_once "${VENDOR_TWRP_DIR}" "${VENDOR_TWRP_PATCH}" "OrangeFox vendor/twrp"
 apply_patch_once "${RECOVERY_DIR}" "${RECOVERY_PATCH}" "OrangeFox recovery"
 
 for language in es_ES hu_HU zh_CN zh_TW; do

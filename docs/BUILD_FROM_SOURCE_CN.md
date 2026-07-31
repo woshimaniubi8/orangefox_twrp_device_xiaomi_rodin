@@ -165,9 +165,11 @@ recovery patch 包含：
   Android 构建环境允许的 `python3`，不依赖被 Soong PATH 限制的 `perl`。repacker 会验证其中的
   Type-C/OTG 模块及 `vbus_switch`，并将最终 Recovery 的 7 个模块逐字节比对为已修补的
   Global 输入，防止 CN recovery fragment 被误用；DTB 与 CN 基线完全相同，仍会移除 xHCI 的
-  `mediatek,usb-offload` 属性。Global 的 6.6.89 MTK DRM 在 Recovery 中不能可靠地从
-  atomic CRTC blank 恢复，因此仅该 profile 定义 `TW_NO_SCREEN_BLANK`：锁屏、超时和亮度恢复
-  仍然可用，但以 `panel1-backlight/brightness=0` 代替关闭 CRTC。CN 不使用此 workaround。
+  `mediatek,usb-offload` 属性。Global 保留原始的 `blanktimer -> gr_fb_blank()` 锁屏状态机，
+  但首次完整配置 atomic DRM pipeline 后，后续锁屏和唤醒只切换 CRTC `ACTIVE=0/1`，保留
+  connector、mode 和 plane 绑定，避免 stock 6.6.89 在完整 teardown/rebuild 后无法恢复面板。
+  仅 Recovery 退出时才完整拆除这些绑定，再释放 mode blob 和 framebuffer；
+  `TW_NO_SCREEN_BLANK` 仍不得定义。
 - stock DTB 的 xHCI 节点依赖 Android USB audio offload；Recovery 不加载其音频/基带依赖。
   repacker 会用 `fdtput` 在临时 DTB 删除唯一的 `mediatek,usb-offload` 属性，并保留、更新
   MTK wrapper 长度字段。构建主机必须提供 `device-tree-compiler`（`fdtget`、`fdtput`）。
@@ -182,7 +184,7 @@ recovery patch 包含：
 device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
 ```
 
-脚本可重复运行。它会检查并应用两份 patch，从 OrangeFox 自带 `extra-languages` 安装 `es_ES`、`hu_HU`、`zh_CN` 和 `zh_TW`，保留、验证内置的 `ja_JP`，然后自动运行完整构建输入预检。预检默认要求 pinned manifest 中全部 662 个 repo 项目（包括 OrangeFox `vendor/recovery` 和 `external/se_omapi`）与已验证 revision 一致，并检查 FocalTech 模块、算法库、配置、模块元数据、init 链接和运行时加载项。
+脚本可重复运行。它会检查并应用 `build/make`、`vendor/twrp` 和 `bootable/recovery` 三份 patch，从 OrangeFox 自带 `extra-languages` 安装 `es_ES`、`hu_HU`、`zh_CN` 和 `zh_TW`，保留、验证内置的 `ja_JP`，然后自动运行完整构建输入预检。预检默认要求 pinned manifest 中全部 662 个 repo 项目（包括 OrangeFox `vendor/recovery` 和 `external/se_omapi`）与已验证 revision 一致，并检查 FocalTech 模块、算法库、配置、模块元数据、init 链接和运行时加载项。
 
 `RODIN_ALLOW_UNPINNED_SOURCE=1` 只用于主动移植到新 revision；它会跳过源码 revision 限制，但不会跳过 blob、FocalTech 资源和 patch 标记检查。普通重复构建不要设置。
 

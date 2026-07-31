@@ -1,0 +1,50 @@
+diff --git a/build/soong/Android.bp b/build/soong/Android.bp
+index 6021975..798c1cf 100644
+--- a/build/soong/Android.bp
++++ b/build/soong/Android.bp
+@@ -175,6 +175,7 @@ soong_config_module_type {
+     bool_variables: [
+         "tw_event_logging",
+         "tw_no_screen_blank",
++        "tw_drm_blank_keep_pipeline",
+         "tw_no_screen_timeout",
+         "tw_oem_build",
+         "tw_round_screen",
+@@ -218,6 +219,9 @@ twrp {
+         tw_no_screen_blank: {
+             cflags: ["-DTW_NO_SCREEN_BLANK"]
+         },
++        tw_drm_blank_keep_pipeline: {
++            cflags: ["-DTW_DRM_BLANK_KEEP_PIPELINE"]
++        },
+         tw_no_screen_timeout: {
+             cflags: ["-DTW_NO_SCREEN_TIMEOUT"]
+         },
+diff --git a/config/BoardConfigSoong.mk b/config/BoardConfigSoong.mk
+index dbaa987..cc32b8a 100644
+--- a/config/BoardConfigSoong.mk
++++ b/config/BoardConfigSoong.mk
+@@ -38,6 +38,7 @@ EXPORT_TO_SOONG := \
+ # Documentation here:
+ # https://github.com/LineageOS/android_build_soong/commit/8328367c44085b948c003116c0ed74a047237a69
+ 
++include bootable/recovery/orangefox_soong.mk
+ SOONG_CONFIG_NAMESPACES += twrpVarsPlugin
+ 
+ SOONG_CONFIG_twrpVarsPlugin :=
+@@ -61,6 +62,7 @@ SOONG_CONFIG_twrpGlobalVars += \
+     tw_use_key_code_touch_sync \
+     tw_ozip_decrypt_key \
+     tw_no_screen_blank \
++    tw_drm_blank_keep_pipeline \
+     tw_no_screen_timeout \
+     tw_oem_build \
+     tw_x_offset \
+@@ -123,6 +125,7 @@ SOONG_CONFIG_twrpGlobalVars_tw_event_logging := $(TW_EVENT_LOGGING)
+ SOONG_CONFIG_twrpGlobalVars_tw_use_key_code_touch_sync := $(TW_USE_KEY_CODE_TOUCH_SYNC)
+ SOONG_CONFIG_twrpGlobalVars_tw_ozip_decrypt_key := $(subst ",, $(TW_OZIP_DECRYPT_KEY))
+ SOONG_CONFIG_twrpGlobalVars_tw_no_screen_blank := $(TW_NO_SCREEN_BLANK)
++SOONG_CONFIG_twrpGlobalVars_tw_drm_blank_keep_pipeline := $(TW_DRM_BLANK_KEEP_PIPELINE)
+ SOONG_CONFIG_twrpGlobalVars_tw_no_screen_timeout := $(TW_NO_SCREEN_TIMEOUT)
+ SOONG_CONFIG_twrpGlobalVars_tw_oem_build := $(TW_OEM_BUILD)
+ SOONG_CONFIG_twrpGlobalVars_tw_x_offset := $(TW_X_OFFSET)

@@ -467,6 +467,187 @@ index 8e22b640..97a85fd9 100644
  }
  
  void gr_clip(int x, int y, int w, int h)
+diff --git a/minuitwrp/graphics_drm.cpp b/minuitwrp/graphics_drm.cpp
+index 0cc80f5c..95ae274a 100644
+--- a/minuitwrp/graphics_drm.cpp
++++ b/minuitwrp/graphics_drm.cpp
+@@ -232,6 +232,9 @@ static drmModeConnector *main_monitor_connector;
+ static int drm_fd = -1;
+ 
+ static bool current_blank_state = true;
++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
++static bool drm_pipeline_configured = false;
++#endif
+ static int fb_prop_id;
+ static struct Crtc crtc_res;
+ static struct Connector conn_res;
+@@ -554,7 +557,68 @@ static int teardown_pipeline(drmModeAtomicReqPtr atomic_req) {
+   return 0;
+ }
+ 
++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
++static void drm_shutdown_pipeline() {
++  drmModeAtomicReqPtr atomic_req = drmModeAtomicAlloc();
++  if (!atomic_req) {
++    printf("DRM shutdown: atomic allocation failed\n");
++    return;
++  }
++
++  int ret = teardown_pipeline(atomic_req);
++  int commit_errno = 0;
++  if (!ret) {
++    errno = 0;
++    ret = drmModeAtomicCommit(drm_fd, atomic_req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
++    commit_errno = errno;
++  }
++  if (ret) {
++    if (commit_errno == 0 && ret < 0)
++      commit_errno = -ret;
++    printf("DRM shutdown: teardown commit failed rc=%d errno=%d (%s)\n", ret, commit_errno,
++           commit_errno ? strerror(commit_errno) : "unknown");
++  } else {
++    printf("DRM shutdown: pipeline torn down before resource release\n");
++  }
++
++  drmModeAtomicFree(atomic_req);
++}
++#endif
++
++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
++static int set_crtc_active(drmModeAtomicReqPtr atomic_req, uint64_t active) {
++  uint32_t prop_id;
++
++  if (!main_monitor_crtc) {
++    printf("DRM retained pipeline: main CRTC is unavailable\n");
++    return -ENODEV;
++  }
++
++  find_prop_id(&crtc_res, crtc, Crtc, main_monitor_crtc->crtc_id, "ACTIVE", prop_id);
++  if (!prop_id) {
++    printf("DRM retained pipeline: CRTC ACTIVE property is unavailable\n");
++    return -ENOENT;
++  }
++
++  const int ret = drmModeAtomicAddProperty(atomic_req, main_monitor_crtc->crtc_id, prop_id,
++                                           active);
++  if (ret < 0) {
++    printf("DRM retained pipeline: failed to add ACTIVE=%u rc=%d\n",
++           active ? 1 : 0, ret);
++    return ret;
++  }
++
++  return 0;
++}
++#endif
++
+ static int drm_disable_crtc(drmModeAtomicReqPtr atomic_req) {
++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
++  if (drm_pipeline_configured) {
++    printf("DRM blank retained pipeline: ACTIVE=0\n");
++    return set_crtc_active(atomic_req, 0);
++  }
++#endif
+   return teardown_pipeline(atomic_req);
+ }
+ 
+@@ -586,14 +650,38 @@ static int setup_pipeline(drmModeAtomicReqPtr atomic_req) {
+ 
+ }
+ static int drm_enable_crtc(drmModeAtomicReqPtr atomic_req) {
++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
++  if (drm_pipeline_configured) {
++    printf("DRM blank retained pipeline: ACTIVE=1\n");
++    return set_crtc_active(atomic_req, 1);
++  }
++#endif
+   return setup_pipeline(atomic_req);
+ }
+ 
++static void log_drm_blank_request(bool blank) {
++  const uint32_t crtc_id = main_monitor_crtc ? main_monitor_crtc->crtc_id : 0;
++  const uint32_t connector_id = main_monitor_connector ? main_monitor_connector->connector_id : 0;
++  const uint32_t fb_id = drm_surfaces[current_buffer] ? drm_surfaces[current_buffer]->fb_id : 0;
++
++  printf("DRM blank request: blank=%d current=%d crtc=%u connector=%u fb=%u lms=%u\n",
++         blank, current_blank_state, crtc_id, connector_id, fb_id, number_of_lms);
++  for (uint32_t i = 0; i < number_of_lms && i < NUM_PLANES; ++i) {
++    const uint32_t plane_id = plane_res[i].plane ? plane_res[i].plane->plane_id : 0;
++    printf("DRM blank plane[%u]=%u\n", i, plane_id);
++  }
++}
++
+ static void drm_blank(minui_backend* backend __unused, bool blank) {
+   int ret = 0;
++  bool commit_attempted = false;
+ 
+-  if (blank == current_blank_state)
++  if (blank == current_blank_state) {
++    printf("DRM blank skipped: request=%d current=%d\n", blank, current_blank_state);
+     return;
++  }
++
++  log_drm_blank_request(blank);
+ 
+   drmModeAtomicReqPtr atomic_req = drmModeAtomicAlloc();
+   if (!atomic_req) {
+@@ -606,14 +694,27 @@ static void drm_blank(minui_backend* backend __unused, bool blank) {
+   else
+     ret = drm_enable_crtc(atomic_req);
+ 
+-  if (!ret)
++  if (ret) {
++    printf("DRM blank setup failed: request=%d rc=%d\n", blank, ret);
++  } else {
++    errno = 0;
+     ret = drmModeAtomicCommit(drm_fd, atomic_req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
++    commit_attempted = true;
++  }
+ 
+   if (!ret) {
+-    printf("Atomic Commit succeed");
+     current_blank_state = blank;
+-  } else {
+-    printf("Atomic Commit failed, rc = %d\n", ret);
++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
++    if (!blank)
++      drm_pipeline_configured = true;
++#endif
++    printf("DRM blank commit succeeded: request=%d current=%d\n", blank, current_blank_state);
++  } else if (commit_attempted) {
++    int commit_errno = errno;
++    if (commit_errno == 0 && ret < 0)
++      commit_errno = -ret;
++    printf("DRM blank commit failed: request=%d rc=%d errno=%d (%s)\n", blank, ret,
++           commit_errno, commit_errno ? strerror(commit_errno) : "unknown");
+   }
+ 
+   drmModeAtomicFree(atomic_req);
+@@ -934,6 +1035,10 @@ static void update_plane_fb() {
+ static GRSurface* drm_init(minui_backend* backend __unused) {
+   drmModeRes* res = nullptr;
+ 
++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
++  drm_pipeline_configured = false;
++#endif
++
+   spr_enabled = android::base::GetIntProperty("vendor.display.enable_spr", 0);
+   /* Consider DRM devices in order. */
+   for (int i = 0; i < DRM_MAX_MINOR; i++) {
+@@ -1155,7 +1260,14 @@ static GRSurface* drm_flip(minui_backend* backend __unused) {
+ }
+ 
+ static void drm_exit(minui_backend* backend __unused) {
++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
++    // Blank/unblank retains the pipeline, but exit must detach it before its
++    // mode blob and framebuffer objects are released.
++    drm_shutdown_pipeline();
++    drm_pipeline_configured = false;
++#else
+     drm_blank(nullptr, true);
++#endif
+     drmModeDestroyPropertyBlob(drm_fd, crtc_res.mode_blob_id);
+     drm_destroy_surface(drm_surfaces[0]);
+     drm_destroy_surface(drm_surfaces[1]);
 diff --git a/minuitwrp/include/minuitwrp/truetype.hpp b/minuitwrp/include/minuitwrp/truetype.hpp
 index 72b7620a..f096a230 100755
 --- a/minuitwrp/include/minuitwrp/truetype.hpp
