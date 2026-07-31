@@ -258,6 +258,22 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
 check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
     "verify_global_recovery_modules" \
     "vendor_boot repacker does not reject a CN recovery fragment for Global"
+check_contains "${DEVICE_DIR}/.github/workflows/build.yml" \
+    'actions/cache/restore@v4' \
+    "CI compiler cache is not configured"
+check_contains "${DEVICE_DIR}/.github/workflows/build.yml" \
+    'CCACHE_EXEC: /usr/bin/ccache' \
+    "CI does not enable the host ccache executable"
+check_contains "${DEVICE_DIR}/.github/workflows/build.yml" \
+    'actions/cache/save@v4' \
+    "CI does not save verified compiler-cache entries"
+cache_best_effort_count="$(grep -cF -- 'continue-on-error: true' \
+    "${DEVICE_DIR}/.github/workflows/build.yml" || true)"
+[[ "${cache_best_effort_count}" -ge 2 ]] || \
+    fail "CI compiler-cache restore and save must both be best-effort"
+check_contains "${DEVICE_DIR}/.github/workflows/build.yml" \
+    "firmware_variant:" \
+    "CI cannot select a single firmware profile for manual builds"
 check_contains "${DEVICE_DIR}/BoardConfig.mk" \
     'OF_USE_AIDL_BOOT_CONTROL := 1' \
     "OrangeFox is not configured to use AIDL BootControl"

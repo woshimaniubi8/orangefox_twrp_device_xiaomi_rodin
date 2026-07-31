@@ -7,10 +7,88 @@ index 357d6e8..cbc485f 100644
  prebuilt/* filter=lfs diff=lfs merge=lfs -text
 +prebuilt/global/modules/*.ko filter=lfs diff=lfs merge=lfs -text
 diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
-index 049c733..ee46231 100644
+index 049c733..129fb73 100644
 --- a/.github/workflows/build.yml
 +++ b/.github/workflows/build.yml
-@@ -95,7 +95,7 @@ jobs:
+@@ -4,6 +4,10 @@ on:
+   push:
+     branches:
+       - main
++    paths-ignore:
++      - README.md
++      - docs/**
++      - .github/ISSUE_TEMPLATE/**
+   workflow_dispatch:
+     inputs:
+       publish:
+@@ -11,6 +15,15 @@ on:
+         required: true
+         default: true
+         type: boolean
++      firmware_variant:
++        description: Firmware profile to build; single-profile runs upload an artifact only
++        required: true
++        default: all
++        type: choice
++        options:
++          - all
++          - cn
++          - global
+ 
+ permissions:
+   contents: read
+@@ -24,9 +37,41 @@ env:
+   ORANGEFOX_SYNC_REVISION: '11e4406b2bd1de939a26b6bfbad7e371cc3b1fa7'
+   ORANGEFOX_TOP: ${{ github.workspace }}/OrangeFox
+   OF_BUILD_JOBS: '1'
++  CCACHE_DIR: ${{ github.workspace }}/.ccache
++  CCACHE_MAXSIZE: '3G'
++  CCACHE_CACHE_VERSION: '1'
+ 
+ jobs:
++  plan:
++    runs-on: ubuntu-24.04
++    outputs:
++      variants: ${{ steps.variants.outputs.variants }}
++      full_release: ${{ steps.variants.outputs.full_release }}
++    steps:
++      - name: Select firmware profiles
++        id: variants
++        shell: bash
++        env:
++          REQUESTED_VARIANT: ${{ inputs.firmware_variant || 'all' }}
++        run: |
++          set -euo pipefail
++          case "${REQUESTED_VARIANT}" in
++            all)
++              echo 'variants=["cn","global"]' >> "$GITHUB_OUTPUT"
++              echo 'full_release=true' >> "$GITHUB_OUTPUT"
++              ;;
++            cn|global)
++              printf 'variants=["%s"]\n' "${REQUESTED_VARIANT}" >> "$GITHUB_OUTPUT"
++              echo 'full_release=false' >> "$GITHUB_OUTPUT"
++              ;;
++            *)
++              echo "Unsupported firmware_variant: ${REQUESTED_VARIANT}" >&2
++              exit 1
++              ;;
++          esac
++
+   build:
++    needs: plan
+     # Hosted image layouts vary. The first steps reclaim unrelated payloads,
+     # then verify the observed capacity before building at low concurrency.
+     runs-on: ubuntu-24.04
+@@ -34,7 +79,7 @@ jobs:
+     strategy:
+       fail-fast: false
+       matrix:
+-        firmware_variant: [cn, global]
++        firmware_variant: ${{ fromJSON(needs.plan.outputs.variants) }}
+     env:
+       RODIN_FIRMWARE_VARIANT: ${{ matrix.firmware_variant }}
+ 
+@@ -95,7 +140,7 @@ jobs:
            set -euo pipefail
            sudo apt-get update
            sudo apt-get install -y --no-install-recommends \
@@ -19,7 +97,49 @@ index 049c733..ee46231 100644
              gcc-multilib git git-lfs gnupg gperf imagemagick \
              lib32ncurses-dev lib32readline-dev lib32z1-dev libelf-dev \
              liblz4-tool libncurses-dev libsdl1.2-dev libssl-dev libxml2 \
-@@ -203,8 +203,24 @@ jobs:
+@@ -134,10 +179,12 @@ jobs:
+           set -euo pipefail
+ 
+           available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
+-          required_kib=$((95 * 1024 * 1024))
++          # The source/out peak needs roughly 83 GiB. Reserve the 3 GiB
++          # compiler cache as well as the existing headroom before syncing.
++          required_kib=$((98 * 1024 * 1024))
+           if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
+             available_gib=$((available_kib / 1024 / 1024))
+-            echo "::error::OrangeFox rodin needs at least 95 GiB free after hosted-image cleanup and swap setup; found ${available_gib} GiB."
++            echo "::error::OrangeFox rodin needs at least 98 GiB free after hosted-image cleanup and swap setup; found ${available_gib} GiB."
+             echo "::error::Use a GitHub-hosted larger runner if this public standard runner image cannot meet the guard."
+             exit 1
+           fi
+@@ -153,6 +200,26 @@ jobs:
+           df -h "$GITHUB_WORKSPACE"
+           free -h
+ 
++      - name: Restore compiler cache
++        id: ccache_restore
++        continue-on-error: true
++        uses: actions/cache/restore@v4
++        with:
++          path: ${{ env.CCACHE_DIR }}
++          key: orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-${{ github.sha }}
++          restore-keys: |
++            orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-
++
++      - name: Configure compiler cache
++        shell: bash
++        run: |
++          set -euo pipefail
++          command -v ccache
++          install -d "$CCACHE_DIR"
++          ccache -M "$CCACHE_MAXSIZE"
++          ccache -z
++          ccache -p
++
+       - name: Install repo tool
+         shell: bash
+         run: |
+@@ -203,8 +270,24 @@ jobs:
            heartbeat_pid=$!
            trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
  
@@ -46,6 +166,77 @@ index 049c733..ee46231 100644
  
            kill "$heartbeat_pid" 2>/dev/null || true
            trap - EXIT
+@@ -270,13 +353,13 @@ jobs:
+ 
+           # slimhub reclaims about 138 GiB on the standard hosted image. A
+           # full pinned source checkout leaves about 45 GiB after .repo is
+-          # removed; this low-memory, single-job build requires a 35 GiB floor
+-          # before Soong starts writing out/.
++          # removed; reserve the 3 GiB compiler cache and keep a 35 GiB floor
++          # for Soong before it starts writing out/.
+           available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
+-          required_kib=$((35 * 1024 * 1024))
++          required_kib=$((38 * 1024 * 1024))
+           if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
+             available_gib=$((available_kib / 1024 / 1024))
+-            echo "::error::OrangeFox rodin needs at least 35 GiB free after .repo cleanup; found ${available_gib} GiB."
++            echo "::error::OrangeFox rodin needs at least 38 GiB free after .repo cleanup; found ${available_gib} GiB."
+             exit 1
+           fi
+ 
+@@ -296,7 +379,10 @@ jobs:
+           GOMEMLIMIT: '3GiB'
+           GOGC: '20'
+           _JAVA_OPTIONS: '-Xmx3g'
+-          USE_CCACHE: '0'
++          USE_CCACHE: '1'
++          CCACHE_EXEC: /usr/bin/ccache
++          CCACHE_COMPILERCHECK: content
++          CCACHE_COMPRESS: 'true'
+         run: |
+           set -euo pipefail
+           build_jobs="$(nproc)"
+@@ -321,6 +407,14 @@ jobs:
+           kill "$heartbeat_pid" 2>/dev/null || true
+           trap - EXIT
+ 
++      - name: Report compiler cache
++        if: always()
++        shell: bash
++        run: |
++          set -euo pipefail
++          ccache -s
++          du -sh "$CCACHE_DIR"
++
+       - name: Validate release image
+         shell: bash
+         env:
+@@ -354,6 +448,14 @@ jobs:
+           ln -s "$disable_avb_image" "$avb_validation_dir/vendor_boot.img"
+           "$avbtool" verify_image --image "$avb_validation_dir/vendor_boot.img"
+ 
++      - name: Save compiler cache
++        if: ${{ success() && steps.ccache_restore.outputs.cache-hit != 'true' }}
++        continue-on-error: true
++        uses: actions/cache/save@v4
++        with:
++          path: ${{ env.CCACHE_DIR }}
++          key: orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-${{ github.sha }}
++
+       - name: Collect release artifact
+         shell: bash
+         env:
+@@ -419,8 +521,8 @@ jobs:
+             "$GITHUB_WORKSPACE/orangefox-build.log"
+ 
+   release:
+-    if: ${{ needs.build.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
+-    needs: build
++    if: ${{ needs.plan.outputs.full_release == 'true' && needs.build.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
++    needs: [plan, build]
+     runs-on: ubuntu-24.04
+     timeout-minutes: 30
+     permissions:
 diff --git a/BoardConfig.mk b/BoardConfig.mk
 index 65b4845..55d6b41 100644
 --- a/BoardConfig.mk
@@ -73,7 +264,7 @@ index 65b4845..55d6b41 100644
  TW_USE_LEGACY_BATTERY_SERVICES := true
  TW_INCLUDE_FASTBOOTD := true
 diff --git a/README.md b/README.md
-index d7f130d..4c2c7a1 100644
+index d7f130d..77a7826 100644
 --- a/README.md
 +++ b/README.md
 @@ -34,14 +34,58 @@ device's validated 60 MB combined-ramdisk limit. The Mount menu's "USB
@@ -139,6 +330,46 @@ index d7f130d..4c2c7a1 100644
  ```
  
  The expected mount point is `/usb_otg`. Test FAT and exFAT media. A drive that
+@@ -214,7 +258,8 @@ container layers that are unused by this build, installs only the required host
+ packages, and adds only the swap deficit plus a small header margin when the
+ runner has insufficient swap. This guarantees at least 12 GiB of usable swap
+ without discarding any swap already supplied by the hosted image.
+-The capacity guard then requires 95 GiB free space and a 14 GiB RAM-class VM.
++The capacity guard reserves the compiler cache and requires 98 GiB free space
++and a 14 GiB RAM-class VM.
+ Runner image layouts can change, so the job prints and checks the observed disk
+ and memory state rather than assuming a fixed hosted-VM allocation. It stops
+ before `repo sync` if the guard cannot be satisfied. In that case, configure a
+@@ -223,11 +268,24 @@ cannot safely complete this source tree. GitHub-hosted jobs also have a six-hour
+ execution limit, so the build remains low-concurrency. The repository must permit
+ `GITHUB_TOKEN` write access to repository contents for prerelease creation.
+ 
+-The workflow checks space again after deleting `.repo` and before Soong starts;
+-it requires 70 GiB at that stage. CN and Global runs use separate concurrency
+-groups, so a manual Global build does not cancel an in-flight CN build. CN keeps
+-the prior concurrency key, so its next push also cancels any queued legacy
+-self-hosted CN run.
++The workflow caches up to 3 GiB of `ccache` per firmware profile. It never
++caches the full Android tree or `out/`: those are far too large for the hosted
++cache and restoring them would erase the benefit. The first build for a source
++revision is still a cold build; subsequent builds restore compatible C/C++
++objects and report their hit rate in the job log. The workflow checks space
++again after deleting `.repo` and before Soong starts; it reserves the cache and
++requires 38 GiB at that stage. Both profiles are matrix jobs in one workflow;
++a new push cancels an older run for the same branch. Cache restore and save are
++best-effort: a cache-service failure falls back to a cold build and never blocks
++a verified image release.
++
++Pushes and manual runs with `firmware_variant=all` build both profiles and may
++publish a prerelease. A manual run can select `cn` or `global` to shorten a
++debug cycle; it uploads only that profile's artifact and never creates a
++partial prerelease.
++
++Pushes that change only `README.md`, `docs/`, or issue templates skip the
++build entirely.
+ 
+ Only successful builds of `main` can create prereleases. A manual test from
+ another ref still uploads its artifact but cannot publish a repository release.
 diff --git a/build-lowmem.sh b/build-lowmem.sh
 index fdd2932..6840863 100755
 --- a/build-lowmem.sh
@@ -276,10 +507,15 @@ index 2f227ef..4b54819 100644
  不能直接加载原始 `scp.ko`。实机 pstore 已确认它会在缺少 SCP reserved-memory 的 Recovery 环境中于 `scp_region_info_init()` 触发 kernel panic。
  
 diff --git a/docs/BUILD_FROM_SOURCE_CN.md b/docs/BUILD_FROM_SOURCE_CN.md
-index 9613a69..690ed9e 100644
+index 9613a69..2b52f82 100644
 --- a/docs/BUILD_FROM_SOURCE_CN.md
 +++ b/docs/BUILD_FROM_SOURCE_CN.md
-@@ -85,10 +85,9 @@ rodin 在删除 `.repo` 后，源码与完整 `out/` 的构建峰值仍约为 83
+@@ -81,21 +81,29 @@ swap。CI 只补足缺少的 swap 并为 header 预留余量，不会丢弃托
+ swap。
+ 
+ rodin 在删除 `.repo` 后，源码与完整 `out/` 的构建峰值仍约为 83 GiB。因此
+-工作流只会在 swap 建立后仍有至少 95 GiB 可用空间、且物理内存至少 14 GiB
++工作流只会在 swap 建立后仍有至少 98 GiB 可用空间、且物理内存至少 14 GiB
  时继续同步和构建。看到 `df` 中约 63 GiB 空闲，只说明 Job 已经被 GitHub
  托管 VM 调度，尚不足以证明完整构建可完成。
  
@@ -287,13 +523,30 @@ index 9613a69..690ed9e 100644
 -Soong。CN 与 Global 使用不同的并发组，手动 Global 构建不会取消正在运行的
 -CN 构建；CN 保留原并发键，因此下一次推送也会自动取消仍在排队的旧
 -self-hosted CN 任务。
-+同步完成并删除 `.repo` 后，工作流会再次要求至少 35 GiB 可用空间才启动
-+Soong。每次工作流都会构建 CN 和 Global 两个矩阵项；同一分支的新工作流会通过
-+并发组取消该分支仍在运行或排队的旧工作流。
++工作流只缓存每个固件 profile 最多 3 GiB 的 `ccache`，不缓存完整源码或 `out/`；后两者
++体积过大，传输与解压反而会拖慢 GitHub 托管 Runner。首次构建仍是冷构建，后续构建会复用
++C/C++ 编译结果，并在日志中输出命中率。同步完成并删除 `.repo` 后，工作流会为该缓存保留
++空间，要求至少 38 GiB 可用空间才启动 Soong。
++缓存的恢复与保存均为 best-effort；缓存服务暂时失败时会退回冷构建，不会阻止已验证镜像上传或发布。
++
++push 以及手动选择 `firmware_variant=all` 的工作流会构建 CN 和 Global 两个矩阵项；同一分支的
++新工作流会通过并发组取消该分支仍在运行或排队的旧工作流。手动触发时可选择 `cn` 或 `global`
++只构建一个 profile，以缩短调试周期；这种单 profile 运行只上传 artifact，不创建不完整的
++prerelease。
++
++只修改 `README.md`、`docs/` 或 issue template 的 push 会被 `paths-ignore` 跳过，不消耗完整构建。
  
  只有 `main` 上成功的构建会创建 prerelease。其他 ref 的手动构建仍会上传
  artifact，但不会向仓库发布 release。
-@@ -145,6 +144,26 @@ recovery patch 包含：
+ 
+ GitHub 托管镜像的实际磁盘布局会变化，因此工作流以运行时的 `df` 与
+ `/proc/meminfo` 为准，而不假定固定容量。GitHub 托管 Job 最长运行 6 小时，
+-故工作流默认只使用两个并行编译任务。若清理后的实际空间仍未达到 95 GiB，
++故工作流默认只使用两个并行编译任务。若清理后的实际空间仍未达到 98 GiB，
+ 应配置 GitHub-hosted larger runner，而不是降低容量阈值或改回 recovery-only
+ 打包路径。
+ 
+@@ -145,6 +153,26 @@ recovery patch 包含：
  - rodin 解密后禁止完整 GUI package 重建，避免 recovery `SIGSEGV`。
  - 解密页面显示前加载默认简体中文。
  - MiSans 主题选择项和 SIH6887 震动节点支持。
@@ -1356,7 +1609,7 @@ index 0000000..9228378
 +if __name__ == "__main__":
 +    raise SystemExit(main())
 diff --git a/tools/verify-build-inputs.sh b/tools/verify-build-inputs.sh
-index 1f960e1..752930a 100755
+index 1f960e1..8d00b9a 100755
 --- a/tools/verify-build-inputs.sh
 +++ b/tools/verify-build-inputs.sh
 @@ -15,7 +15,7 @@ case "${RODIN_FIRMWARE_VARIANT:-cn}" in
@@ -1442,7 +1695,7 @@ index 1f960e1..752930a 100755
  check_contains "${DEVICE_DIR}/Android.bp" \
      'name: "rodin_android.hardware.secure_element-V1-ndk"' \
      "Recovery secure-element prebuilt module is missing"
-@@ -194,6 +240,24 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+@@ -194,6 +240,40 @@ check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
  check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
      'verify_image --image "$disable_avb_verify_image"' \
      "disable-avb vendor_boot AVB footer is not verified"
@@ -1464,10 +1717,26 @@ index 1f960e1..752930a 100755
 +check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
 +    "verify_global_recovery_modules" \
 +    "vendor_boot repacker does not reject a CN recovery fragment for Global"
++check_contains "${DEVICE_DIR}/.github/workflows/build.yml" \
++    'actions/cache/restore@v4' \
++    "CI compiler cache is not configured"
++check_contains "${DEVICE_DIR}/.github/workflows/build.yml" \
++    'CCACHE_EXEC: /usr/bin/ccache' \
++    "CI does not enable the host ccache executable"
++check_contains "${DEVICE_DIR}/.github/workflows/build.yml" \
++    'actions/cache/save@v4' \
++    "CI does not save verified compiler-cache entries"
++cache_best_effort_count="$(grep -cF -- 'continue-on-error: true' \
++    "${DEVICE_DIR}/.github/workflows/build.yml" || true)"
++[[ "${cache_best_effort_count}" -ge 2 ]] || \
++    fail "CI compiler-cache restore and save must both be best-effort"
++check_contains "${DEVICE_DIR}/.github/workflows/build.yml" \
++    "firmware_variant:" \
++    "CI cannot select a single firmware profile for manual builds"
  check_contains "${DEVICE_DIR}/BoardConfig.mk" \
      'OF_USE_AIDL_BOOT_CONTROL := 1' \
      "OrangeFox is not configured to use AIDL BootControl"
-@@ -248,6 +312,12 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
+@@ -248,6 +328,12 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
          fail "Python syntax check failed: tools/verify-source-manifest.py"
  fi
  
@@ -1480,7 +1749,7 @@ index 1f960e1..752930a 100755
  if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
      for marker in \
          OF_SKIP_POST_DECRYPT_THEME_RELOAD \
-@@ -255,6 +325,9 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
+@@ -255,6 +341,9 @@ if [[ -d "${TOP_DIR}/bootable/recovery" ]]; then
          fallback_face \
          processKeyChord \
          Resolve_UsbOtg_Block_Device \
@@ -1490,7 +1759,7 @@ index 1f960e1..752930a 100755
          "skipping logical partition alias" \
          "Decrypted userdata mapper is still present"; do
          search_tree "$marker" "${TOP_DIR}/bootable/recovery" || \
-@@ -310,6 +383,9 @@ check_contains "${TOP_DIR}/system/vold/Weaver1.cpp" \
+@@ -310,6 +399,9 @@ check_contains "${TOP_DIR}/system/vold/Weaver1.cpp" \
  check_contains "${TOP_DIR}/vendor/twrp/config/BoardConfigSoong.mk" \
      'include bootable/recovery/orangefox_soong.mk' \
      "OrangeFox vendor/twrp Soong include is missing"

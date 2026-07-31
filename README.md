@@ -258,7 +258,8 @@ container layers that are unused by this build, installs only the required host
 packages, and adds only the swap deficit plus a small header margin when the
 runner has insufficient swap. This guarantees at least 12 GiB of usable swap
 without discarding any swap already supplied by the hosted image.
-The capacity guard then requires 95 GiB free space and a 14 GiB RAM-class VM.
+The capacity guard reserves the compiler cache and requires 98 GiB free space
+and a 14 GiB RAM-class VM.
 Runner image layouts can change, so the job prints and checks the observed disk
 and memory state rather than assuming a fixed hosted-VM allocation. It stops
 before `repo sync` if the guard cannot be satisfied. In that case, configure a
@@ -267,11 +268,24 @@ cannot safely complete this source tree. GitHub-hosted jobs also have a six-hour
 execution limit, so the build remains low-concurrency. The repository must permit
 `GITHUB_TOKEN` write access to repository contents for prerelease creation.
 
-The workflow checks space again after deleting `.repo` and before Soong starts;
-it requires 70 GiB at that stage. CN and Global runs use separate concurrency
-groups, so a manual Global build does not cancel an in-flight CN build. CN keeps
-the prior concurrency key, so its next push also cancels any queued legacy
-self-hosted CN run.
+The workflow caches up to 3 GiB of `ccache` per firmware profile. It never
+caches the full Android tree or `out/`: those are far too large for the hosted
+cache and restoring them would erase the benefit. The first build for a source
+revision is still a cold build; subsequent builds restore compatible C/C++
+objects and report their hit rate in the job log. The workflow checks space
+again after deleting `.repo` and before Soong starts; it reserves the cache and
+requires 38 GiB at that stage. Both profiles are matrix jobs in one workflow;
+a new push cancels an older run for the same branch. Cache restore and save are
+best-effort: a cache-service failure falls back to a cold build and never blocks
+a verified image release.
+
+Pushes and manual runs with `firmware_variant=all` build both profiles and may
+publish a prerelease. A manual run can select `cn` or `global` to shorten a
+debug cycle; it uploads only that profile's artifact and never creates a
+partial prerelease.
+
+Pushes that change only `README.md`, `docs/`, or issue templates skip the
+build entirely.
 
 Only successful builds of `main` can create prereleases. A manual test from
 another ref still uploads its artifact but cannot publish a repository release.

@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - README.md
+      - docs/**
+      - .github/ISSUE_TEMPLATE/**
   workflow_dispatch:
     inputs:
       publish:
@@ -11,6 +15,15 @@ on:
         required: true
         default: true
         type: boolean
+      firmware_variant:
+        description: Firmware profile to build; single-profile runs upload an artifact only
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - cn
+          - global
 
 permissions:
   contents: read
@@ -24,9 +37,41 @@ env:
   ORANGEFOX_SYNC_REVISION: '11e4406b2bd1de939a26b6bfbad7e371cc3b1fa7'
   ORANGEFOX_TOP: ${{ github.workspace }}/OrangeFox
   OF_BUILD_JOBS: '1'
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: '3G'
+  CCACHE_CACHE_VERSION: '1'
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      variants: ${{ steps.variants.outputs.variants }}
+      full_release: ${{ steps.variants.outputs.full_release }}
+    steps:
+      - name: Select firmware profiles
+        id: variants
+        shell: bash
+        env:
+          REQUESTED_VARIANT: ${{ inputs.firmware_variant || 'all' }}
+        run: |
+          set -euo pipefail
+          case "${REQUESTED_VARIANT}" in
+            all)
+              echo 'variants=["cn","global"]' >> "$GITHUB_OUTPUT"
+              echo 'full_release=true' >> "$GITHUB_OUTPUT"
+              ;;
+            cn|global)
+              printf 'variants=["%s"]\n' "${REQUESTED_VARIANT}" >> "$GITHUB_OUTPUT"
+              echo 'full_release=false' >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported firmware_variant: ${REQUESTED_VARIANT}" >&2
+              exit 1
+              ;;
+          esac
+
   build:
+    needs: plan
     # Hosted image layouts vary. The first steps reclaim unrelated payloads,
     # then verify the observed capacity before building at low concurrency.
     runs-on: ubuntu-24.04
@@ -34,7 +79,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        firmware_variant: [cn, global]
+        firmware_variant: ${{ fromJSON(needs.plan.outputs.variants) }}
     env:
       RODIN_FIRMWARE_VARIANT: ${{ matrix.firmware_variant }}
 
@@ -134,10 +179,12 @@ jobs:
           set -euo pipefail
 
           available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
-          required_kib=$((95 * 1024 * 1024))
+          # The source/out peak needs roughly 83 GiB. Reserve the 3 GiB
+          # compiler cache as well as the existing headroom before syncing.
+          required_kib=$((98 * 1024 * 1024))
           if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
             available_gib=$((available_kib / 1024 / 1024))
-            echo "::error::OrangeFox rodin needs at least 95 GiB free after hosted-image cleanup and swap setup; found ${available_gib} GiB."
+            echo "::error::OrangeFox rodin needs at least 98 GiB free after hosted-image cleanup and swap setup; found ${available_gib} GiB."
             echo "::error::Use a GitHub-hosted larger runner if this public standard runner image cannot meet the guard."
             exit 1
           fi
@@ -152,6 +199,26 @@ jobs:
 
           df -h "$GITHUB_WORKSPACE"
           free -h
+
+      - name: Restore compiler cache
+        id: ccache_restore
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-${{ github.sha }}
+          restore-keys: |
+            orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-
+
+      - name: Configure compiler cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ccache
+          install -d "$CCACHE_DIR"
+          ccache -M "$CCACHE_MAXSIZE"
+          ccache -z
+          ccache -p
 
       - name: Install repo tool
         shell: bash
@@ -286,13 +353,13 @@ jobs:
 
           # slimhub reclaims about 138 GiB on the standard hosted image. A
           # full pinned source checkout leaves about 45 GiB after .repo is
-          # removed; this low-memory, single-job build requires a 35 GiB floor
-          # before Soong starts writing out/.
+          # removed; reserve the 3 GiB compiler cache and keep a 35 GiB floor
+          # for Soong before it starts writing out/.
           available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
-          required_kib=$((35 * 1024 * 1024))
+          required_kib=$((38 * 1024 * 1024))
           if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
             available_gib=$((available_kib / 1024 / 1024))
-            echo "::error::OrangeFox rodin needs at least 35 GiB free after .repo cleanup; found ${available_gib} GiB."
+            echo "::error::OrangeFox rodin needs at least 38 GiB free after .repo cleanup; found ${available_gib} GiB."
             exit 1
           fi
 
@@ -312,7 +379,10 @@ jobs:
           GOMEMLIMIT: '3GiB'
           GOGC: '20'
           _JAVA_OPTIONS: '-Xmx3g'
-          USE_CCACHE: '0'
+          USE_CCACHE: '1'
+          CCACHE_EXEC: /usr/bin/ccache
+          CCACHE_COMPILERCHECK: content
+          CCACHE_COMPRESS: 'true'
         run: |
           set -euo pipefail
           build_jobs="$(nproc)"
@@ -336,6 +406,14 @@ jobs:
 
           kill "$heartbeat_pid" 2>/dev/null || true
           trap - EXIT
+
+      - name: Report compiler cache
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          ccache -s
+          du -sh "$CCACHE_DIR"
 
       - name: Validate release image
         shell: bash
@@ -369,6 +447,14 @@ jobs:
           trap 'rm -rf "$avb_validation_dir"' EXIT
           ln -s "$disable_avb_image" "$avb_validation_dir/vendor_boot.img"
           "$avbtool" verify_image --image "$avb_validation_dir/vendor_boot.img"
+
+      - name: Save compiler cache
+        if: ${{ success() && steps.ccache_restore.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-${{ github.sha }}
 
       - name: Collect release artifact
         shell: bash
@@ -435,8 +521,8 @@ jobs:
             "$GITHUB_WORKSPACE/orangefox-build.log"
 
   release:
-    if: ${{ needs.build.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
-    needs: build
+    if: ${{ needs.plan.outputs.full_release == 'true' && needs.build.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
+    needs: [plan, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

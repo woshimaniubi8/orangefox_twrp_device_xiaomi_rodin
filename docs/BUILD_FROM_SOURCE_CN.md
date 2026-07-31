@@ -81,20 +81,29 @@ swap。CI 只补足缺少的 swap 并为 header 预留余量，不会丢弃托�
 swap。
 
 rodin 在删除 `.repo` 后，源码与完整 `out/` 的构建峰值仍约为 83 GiB。因此
-工作流只会在 swap 建立后仍有至少 95 GiB 可用空间、且物理内存至少 14 GiB
+工作流只会在 swap 建立后仍有至少 98 GiB 可用空间、且物理内存至少 14 GiB
 时继续同步和构建。看到 `df` 中约 63 GiB 空闲，只说明 Job 已经被 GitHub
 托管 VM 调度，尚不足以证明完整构建可完成。
 
-同步完成并删除 `.repo` 后，工作流会再次要求至少 35 GiB 可用空间才启动
-Soong。每次工作流都会构建 CN 和 Global 两个矩阵项；同一分支的新工作流会通过
-并发组取消该分支仍在运行或排队的旧工作流。
+工作流只缓存每个固件 profile 最多 3 GiB 的 `ccache`，不缓存完整源码或 `out/`；后两者
+体积过大，传输与解压反而会拖慢 GitHub 托管 Runner。首次构建仍是冷构建，后续构建会复用
+C/C++ 编译结果，并在日志中输出命中率。同步完成并删除 `.repo` 后，工作流会为该缓存保留
+空间，要求至少 38 GiB 可用空间才启动 Soong。
+缓存的恢复与保存均为 best-effort；缓存服务暂时失败时会退回冷构建，不会阻止已验证镜像上传或发布。
+
+push 以及手动选择 `firmware_variant=all` 的工作流会构建 CN 和 Global 两个矩阵项；同一分支的
+新工作流会通过并发组取消该分支仍在运行或排队的旧工作流。手动触发时可选择 `cn` 或 `global`
+只构建一个 profile，以缩短调试周期；这种单 profile 运行只上传 artifact，不创建不完整的
+prerelease。
+
+只修改 `README.md`、`docs/` 或 issue template 的 push 会被 `paths-ignore` 跳过，不消耗完整构建。
 
 只有 `main` 上成功的构建会创建 prerelease。其他 ref 的手动构建仍会上传
 artifact，但不会向仓库发布 release。
 
 GitHub 托管镜像的实际磁盘布局会变化，因此工作流以运行时的 `df` 与
 `/proc/meminfo` 为准，而不假定固定容量。GitHub 托管 Job 最长运行 6 小时，
-故工作流默认只使用两个并行编译任务。若清理后的实际空间仍未达到 95 GiB，
+故工作流默认只使用两个并行编译任务。若清理后的实际空间仍未达到 98 GiB，
 应配置 GitHub-hosted larger runner，而不是降低容量阈值或改回 recovery-only
 打包路径。
 
