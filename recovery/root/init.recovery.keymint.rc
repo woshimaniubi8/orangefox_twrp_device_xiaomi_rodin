@@ -55,6 +55,8 @@ service vendor.weaver_nxp /vendor/bin/hw/android.hardware.weaver-service.nxp
 on fs
     mkdir /mnt/vendor/persist 0755 root root
     mount ext4 /dev/block/by-name/persist /mnt/vendor/persist ro noatime nosuid nodev wait noload
+    mkdir /persist 0755 root root
+    mount none /mnt/vendor/persist /persist bind
     chmod 0660 /dev/tee0
     chmod 0660 /dev/teepriv0
     chmod 0660 /dev/rpmb0

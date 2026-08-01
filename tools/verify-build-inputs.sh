@@ -80,8 +80,8 @@ check_file "${DEVICE_DIR}/manifests/device-blobs.sha256"
 check_file "${DEVICE_DIR}/manifests/orangefox-fox_14.1-pinned.xml"
 check_sha256 "${DEVICE_DIR}/patches/orangefox-build-make.patch" 5f2d3f43a4d78eee6d560a4a169df30fc95de6fa2ed294e3210e684a641a8329
 check_sha256 "${DEVICE_DIR}/patches/orangefox-vendor-twrp.patch" d845e7cc38d612fa838db94da6336820b48d2e4251e109ee7b4ef2f361d22158
-check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 9fa406ed5206e3b341d3718cb9a74312cc03a03d11a50dbe4734751a0917fbb2
-check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" b4d8a7b2457d2a61ff77313e25d1822435d2174cb095d0faa42f7f28e0800b23
+check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" b10e2e38df4d30058488832d6d4c50a574246bcef5b05944999285146636eb67
+check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 9a0f318a8df7a99a42e8c8ebac0891626cfd5ba8eba7936e3a7ec5b22931945a
 
 if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
     if ! python3 "${DEVICE_DIR}/tools/verify-source-manifest.py" "${TOP_DIR}" \
@@ -419,6 +419,28 @@ check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
 check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
     'DRM shutdown: pipeline torn down before resource release' \
     "Global DRM shutdown teardown is missing"
+check_contains "${TOP_DIR}/bootable/recovery/partitions.hpp" \
+    'Get_Logical_Partition_Name' \
+    "logical partition name accessor is missing"
+check_contains "${TOP_DIR}/bootable/recovery/partitionmanager.cpp" \
+    'twrpPart->Get_Logical_Partition_Name()' \
+    "logical super partition name is derived from its mount point"
+check_contains "${DEVICE_DIR}/recovery/root/system/etc/recovery.fstab" \
+    'mi_ext /mnt/vendor/mi_ext erofs ro wait,slotselect,avb=vbmeta,logical,first_stage_mount,nofail' \
+    "Recovery mi_ext logical partition entry is missing"
+if grep -qE '^(overlay |/mnt/vendor/mi_ext /mi_ext )' \
+        "${DEVICE_DIR}/recovery/root/system/etc/recovery.fstab"; then
+    fail "Recovery fstab must not contain Android init-only mi_ext bind or overlay entries"
+fi
+check_contains "${TOP_DIR}/bootable/recovery/data.cpp" \
+    'Persist is mounted read-only; skipping OrangeFox settings write' \
+    "read-only persist write guard is missing"
+check_contains "${DEVICE_DIR}/recovery/root/init.recovery.keymint.rc" \
+    'mount none /mnt/vendor/persist /persist bind' \
+    "Recovery persist bind alias is missing"
+check_contains "${DEVICE_DIR}/recovery/root/system/etc/twrp.flags" \
+    'flags=display="persist";fsflags=ro,noload' \
+    "Recovery persist must remain read-only and journal-safe"
 
 if command -v file >/dev/null 2>&1 && [[ -f "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" ]]; then
     file "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" | grep -q 'TrueType Font data' || \

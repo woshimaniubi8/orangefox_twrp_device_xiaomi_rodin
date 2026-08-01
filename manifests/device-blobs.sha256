@@ -67,7 +67,7 @@ f09ae22ec8581cc93b1f237dc1c09f2bd30885d53dfc5ce512f8011c6efef6e2  device/xiaomi/
 62fefc24427bac964dfa6e92566f20051842d177f2abb072439ec3e072551810  device/xiaomi/rodin/recovery/root/first_stage_ramdisk/fstab.mt6899
 9db4c6260eae00d7fe92c3d5d3db1764f62e3498e4c6b4e020c621d8dc8b752d  device/xiaomi/rodin/recovery/root/init.recovery.bootctl.rc
 c0bc22a0c7158cb92f9720f7d74f7e38861d98e7dac4c726e70da302f2a195c8  device/xiaomi/rodin/recovery/root/init.recovery.hardware.rc
-7a08e217122beb7c349b49df0985ecdbe98d1cada7f766c5fdb9961fee803ac3  device/xiaomi/rodin/recovery/root/init.recovery.keymint.rc
+83ae9f0f252190f4e324171ae611d0aaf6cba5cca2638af2ac38f524969fc5c8  device/xiaomi/rodin/recovery/root/init.recovery.keymint.rc
 5dbbf5b7f09369becd9a8fd39db521840f62563c95d6f0bca73cee4bfa28c85d  device/xiaomi/rodin/recovery/root/init.recovery.mt6899.rc
 e9dde5655db30dcce1a8abf7a23c7db907790d791a625559a14257aad3323846  device/xiaomi/rodin/recovery/root/init.recovery.project.rc
 84ee9b33a5011c5837a20f25b2ba68af8c4a971707a3befb9d3d3642d0df170b  device/xiaomi/rodin/recovery/root/init.recovery.usb.rc
@@ -332,9 +332,9 @@ bdf0168dbb1d03a28a41d3a5ef484cd2b2a80abc389db3fe91461215b99ba410  device/xiaomi/
 561176fdcca2669f8e718f911bba59a745bd43f05083f2249b80e627b73a395d  device/xiaomi/rodin/recovery/root/system/etc/cgroups.json
 cc5062290ee1f74f8da950ca9467625e0cd47fabbf6ba9027e7dc434a7c9b671  device/xiaomi/rodin/recovery/root/system/etc/event-log-tags
 046bb6ada4a68049d9c3af58d7909a0d12496f4117ce88628d27e832b8e98610  device/xiaomi/rodin/recovery/root/system/etc/init/android.hardware.fastboot-service.example_recovery.rc
-62fefc24427bac964dfa6e92566f20051842d177f2abb072439ec3e072551810  device/xiaomi/rodin/recovery/root/system/etc/recovery.fstab
+cb49d7b5e3cbc1a44ba9e04d33a9f1634ca96ce21edb919e581ff7a719b00577  device/xiaomi/rodin/recovery/root/system/etc/recovery.fstab
 3d7c39073503b41dd9c9cb777f67460768d845e6330bcda18ae0a52fb4ba3ad9  device/xiaomi/rodin/recovery/root/system/etc/task_profiles.json
-fcd249c22c10e174a8fdac9cc1dc397b7354b18925a85b335eb6b87014d4995d  device/xiaomi/rodin/recovery/root/system/etc/twrp.flags
+3d6aeaf3df64d525a004ca8babc04e817599a4e71e2bd5217c8e464e9f20b1fe  device/xiaomi/rodin/recovery/root/system/etc/twrp.flags
 e75201e0a0d2be1a5a13371a010b749ac6d66fe5dc2742fa4a0d13876d5e4312  device/xiaomi/rodin/recovery/root/system/etc/ueventd.rc
 d01d06cc43d3d6ef28f3bd4b2121967edb8bab0414e1cb7ffb5be9cb8525ee61  device/xiaomi/rodin/recovery/root/system/etc/vintf/manifest.xml
 3131029d0f2ee73c4dcb01429d0b8e46d8e1d3839216999dafa3eb6963441ddd  device/xiaomi/rodin/recovery/root/vendor/etc/ueventd.rc

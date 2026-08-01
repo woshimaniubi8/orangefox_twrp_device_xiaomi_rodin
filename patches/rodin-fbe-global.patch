@@ -992,45 +992,103 @@ index 70dfc378ad1fb0e02c422af23ef642168901f8ec..d231a028e32cd2a1716afc95ad21d887
  TW_RECOVERY_ADDITIONAL_RELINK_LIBRARY_FILES = \
      $(TARGET_OUT_SHARED_LIBRARIES)/libtrusty.so \
 diff --git a/README.md b/README.md
-index fc739b30db4fc0a534a908ba4749d6c7d5b5ee1a..3aa3d2c6824e4c3e334f24d54a1dafe48ed14a05 100644
+index fc739b30db4fc0a534a908ba4749d6c7d5b5ee1a..08e521a571019898ffbfe690b6b7fcc1ebeff468 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,18 +1,6 @@
+@@ -1,9 +1,49 @@
 -# OrangeFox Recovery device tree for Redmi Turbo 4 (rodin)
 +# orangefox_twrp_device_xiaomi_rodin
 +### Orangefox device tree for rodin (Redmi Turbo 4 / Poco X7 Pro)
  
 -Chinese build and porting documentation:
--
--- [`manifests/README_CN.md`](manifests/README_CN.md)
--- [`docs/BUILD_FROM_SOURCE_CN.md`](docs/BUILD_FROM_SOURCE_CN.md)
--- [`docs/BLOBS_AND_PORTING_CN.md`](docs/BLOBS_AND_PORTING_CN.md)
--- [`docs/COMPATIBILITY_CN.md`](docs/COMPATIBILITY_CN.md)
--- [`docs/TROUBLESHOOTING_CN.md`](docs/TROUBLESHOOTING_CN.md)
--
--Device tree for the Redmi Turbo 4 (`rodin`), built against OrangeFox 14.1.
--The vendor boot layout, MediaTek HALs, firmware, and kernel modules follow
--[`KSN2redawew/android_device_xiaomi_rodin-twrp`](https://github.com/KSN2redawew/android_device_xiaomi_rodin-twrp)
--at commit `50c9afc`. Firmware-specific boot data comes from the supplied
--Android 16 HyperOS partition dump.
- 
- ## Device and firmware base
- 
-@@ -25,9 +13,105 @@ Android 16 HyperOS partition dump.
- - Installed system reported by the owner: Android 16 HyperOS
- - Display: `1220x2712`; OrangeFox theme coordinate space: `1080x2400`
- 
-+Support:
 +
-+-  **Data decrypt (FBE)**
-+-  **USB OTG storage**
-+-  **Battery and temperature display**
-+-  **Screen brightness adjustment**
-+-  **Multiple languages(include Chinese)**
++## Device and firmware base
 +
- The vendor metadata remains Android 15 because the Android 16 system uses an
- Android 15 vendor/GKI base.
++| Item                | Value                                                        |
++| ----------------- | -------------------------------------------------------- |
++| Model             | `rodin`                                                  |
++| SoC               | MediaTek MT6899 / Dimensity 8400 Ultra                   |
++| Kernel            | `6.6.*`                                                  |
++| Layout            | A/B, dynamic partitions, virtual A/B userspace snapshots |
++| Recovery location | vendor boot header v4, named `recovery` fragment         |
++| Vendor base       | `OS3.0.303.0.WOJCNXM`, Android 15 / API 35               |
++| Installed system  | Android 16 HyperOS 3                                     |
++| Display           | `1220×2712`                                              |
++
++You can gou the prebuilt image from release
++
++***
++
++**Works:**
++
++-  **✅Data decrypt (FBE,MiTEE)**
++-  **✅MTP,ADB,USB-OTG**
++-  **✅Battery and temperature display**
++-  **✅Screen brightness adjustment**
++-  **✅Vibration & Touch**
++-  **✅Multiple languages(include Chinese)**
++-  **✅Backup & Restore**
++-  **✅Flashing ZIP or Image**
++
++**Not works:**
++
++- **❓Global device cant unlock screen?(still need test)**
++
++***
++
++The vendor metadata remains Android 15 because the Android 16 system uses an
++Android 15 vendor/GKI base.
++
++Build and porting documentation:
  
+ - [`manifests/README_CN.md`](manifests/README_CN.md)
+ - [`docs/BUILD_FROM_SOURCE_CN.md`](docs/BUILD_FROM_SOURCE_CN.md)
++- [`docs/DEVICE_TREE_PATCHES_CN.md`](docs/DEVICE_TREE_PATCHES_CN.md)
+ - [`docs/BLOBS_AND_PORTING_CN.md`](docs/BLOBS_AND_PORTING_CN.md)
+ - [`docs/COMPATIBILITY_CN.md`](docs/COMPATIBILITY_CN.md)
+ - [`docs/TROUBLESHOOTING_CN.md`](docs/TROUBLESHOOTING_CN.md)
+@@ -14,19 +54,23 @@ The vendor boot layout, MediaTek HALs, firmware, and kernel modules follow
+ at commit `50c9afc`. Firmware-specific boot data comes from the supplied
+ Android 16 HyperOS partition dump.
+ 
+-## Device and firmware base
++## Build
+ 
+-- Model: `24129RT7CC`
+-- SoC: MediaTek MT6899 / Dimensity 8400 Ultra
+-- Kernel: `6.6.77-android15-8-gca30f3b4bef6-abogki440974771-4k`
+-- Layout: A/B, dynamic partitions, virtual A/B userspace snapshots
+-- Recovery location: vendor boot header v4, named `recovery` fragment
+-- Vendor base: `OS3.0.303.0.WOJCNXM`, Android 15 / API 35
+-- Installed system reported by the owner: Android 16 HyperOS
+-- Display: `1220x2712`; OrangeFox theme coordinate space: `1080x2400`
++```bash
++export ALLOW_MISSING_DEPENDENCIES=true
++export FOX_BUILD_DEVICE=rodin
++export FOX_AB_DEVICE=1
++export FOX_VIRTUAL_AB_DEVICE=1
++export OF_FORCE_PREBUILT_KERNEL=1
+ 
+-The vendor metadata remains Android 15 because the Android 16 system uses an
+-Android 15 vendor/GKI base.
++OF_BUILD_JOBS=8 GOMEMLIMIT=10GiB \
++    device/xiaomi/rodin/build-lowmem.sh adbd vendorbootimage
++```
++
++Soong can use more than 16 GiB while regenerating the build graph. On a 24 GiB
++host, keep at least 12 GiB of swap enabled. The low-memory wrapper also runs
++`tools/build-system-compatible-vendor-boot.sh`; a direct `mka vendorbootimage`
++only creates an intermediate recovery-only layout and must not be flashed.
+ 
+ ## Vendor boot layout
+ 
+@@ -136,23 +180,138 @@ disabled. The Android 15 NDK interface libraries are isolated under
+ source-built Weaver interface under `/system/lib64`. On-device testing confirms
+ that the lockscreen credential decrypts FBE user 0 and mounts `/data` read-write.
+ 
+-## Build
++## USB-OTG
++
 +USB OTG resolves devices dynamically from `/sys/block`: only SCSI disks whose
 +parent path contains `/usb` are eligible, their first partition is preferred,
 +and the raw disk is used only when no partition exists. This prevents a fixed
@@ -1083,12 +1141,19 @@ index fc739b30db4fc0a534a908ba4749d6c7d5b5ee1a..3aa3d2c6824e4c3e334f24d54a1dafe4
 +
 +For the first on-device test, boot recovery and verify the computer-side state
 +first:
-+
-+```bash
+ 
+ ```bash
+-export ALLOW_MISSING_DEPENDENCIES=true
+-export FOX_BUILD_DEVICE=rodin
+-export FOX_AB_DEVICE=1
+-export FOX_VIRTUAL_AB_DEVICE=1
+-export OF_FORCE_PREBUILT_KERNEL=1
 +adb shell 'lsmod | grep -E "xhci|mtu3|usb"'
 +adb shell 'cat /sys/class/typec/port0/power_role; cat /sys/class/usb_role/11201000.usb0-role-switch/role'
 +```
-+
+ 
+-OF_BUILD_JOBS=8 GOMEMLIMIT=10GiB \
+-    device/xiaomi/rodin/build-lowmem.sh adbd vendorbootimage
 +Then disconnect the computer, open **Mount**, tap the USB floating button, and
 +attach one OTG flash drive within twenty seconds. Inspect `/usb_otg` from the
 +Recovery file manager. ADB deliberately disconnects while host mode is active.
@@ -1098,34 +1163,17 @@ index fc739b30db4fc0a534a908ba4749d6c7d5b5ee1a..3aa3d2c6824e4c3e334f24d54a1dafe4
 +```bash
 +adb shell 'for d in /sys/block/sd*/device; do readlink -f "$d"; done 2>/dev/null | grep /usb'
 +adb shell 'grep -E "USB OTG|usb_otg" /tmp/recovery.log | tail -100'
-+```
-+
+ ```
+ 
+-Soong can use more than 16 GiB while regenerating the build graph. On a 24 GiB
+-host, keep at least 12 GiB of swap enabled. The low-memory wrapper also runs
+-`tools/build-system-compatible-vendor-boot.sh`; a direct `mka vendorbootimage`
+-only creates an intermediate recovery-only layout and must not be flashed.
 +The expected mount point is `/usb_otg`. Test FAT and exFAT media. A drive that
 +draws more current than the phone can supply requires a powered hub; that is a
 +power limitation, not a filesystem failure.
 +
-+Build and porting documentation:
 +
-+- [`manifests/README_CN.md`](manifests/README_CN.md)
-+- [`docs/BUILD_FROM_SOURCE_CN.md`](docs/BUILD_FROM_SOURCE_CN.md)
-+- [`docs/DEVICE_TREE_PATCHES_CN.md`](docs/DEVICE_TREE_PATCHES_CN.md)
-+- [`docs/BLOBS_AND_PORTING_CN.md`](docs/BLOBS_AND_PORTING_CN.md)
-+- [`docs/COMPATIBILITY_CN.md`](docs/COMPATIBILITY_CN.md)
-+- [`docs/TROUBLESHOOTING_CN.md`](docs/TROUBLESHOOTING_CN.md)
-+
-+Device tree for the Redmi Turbo 4 (`rodin`), built against OrangeFox 14.1.
-+The vendor boot layout, MediaTek HALs, firmware, and kernel modules follow
-+[`KSN2redawew/android_device_xiaomi_rodin-twrp`](https://github.com/KSN2redawew/android_device_xiaomi_rodin-twrp)
-+at commit `50c9afc`. Firmware-specific boot data comes from the supplied
-+Android 16 HyperOS partition dump.
-+
- ## Vendor boot layout
- 
- The delivered whole image uses the Android vendor boot v4 fragment model:
-@@ -154,6 +238,63 @@ host, keep at least 12 GiB of swap enabled. The low-memory wrapper also runs
- `tools/build-system-compatible-vendor-boot.sh`; a direct `mka vendorbootimage`
- only creates an intermediate recovery-only layout and must not be flashed.
- 
 +## GitHub Actions
 +
 +Pushing to `main` starts the `Build and publish OrangeFox rodin` workflow. It
@@ -1182,10 +1230,9 @@ index fc739b30db4fc0a534a908ba4749d6c7d5b5ee1a..3aa3d2c6824e4c3e334f24d54a1dafe4
 +
 +Only successful builds of `main` can create prereleases. A manual test from
 +another ref still uploads its artifact but cannot publish a repository release.
-+
+ 
  ## Controlled device test
  
- Xiaomi's user-build fastbootd does not support `fetch`, so
 diff --git a/build-lowmem.sh b/build-lowmem.sh
 index fdd2932bad782292592294a49aad581ee86d4c49..684086335d2d0e8f2319f85184eb1cd5099450c7 100755
 --- a/build-lowmem.sh
@@ -1325,7 +1372,7 @@ index 2f227efa10fe58102c1c8b9c962778b65f354535..4b54819fad051cfe72c03de5529c14a7
  不能直接加载原始 `scp.ko`。实机 pstore 已确认它会在缺少 SCP reserved-memory 的 Recovery 环境中于 `scp_region_info_init()` 触发 kernel panic。
  
 diff --git a/docs/BUILD_FROM_SOURCE_CN.md b/docs/BUILD_FROM_SOURCE_CN.md
-index d28fd7e16bee62c7e9093d93a1ce421627418d0c..8e4f45ddd32b874811a52f2b0d6a94d5dd5f29ca 100644
+index d28fd7e16bee62c7e9093d93a1ce421627418d0c..da3f339299bfe4422c98ceedce085358c88a9006 100644
 --- a/docs/BUILD_FROM_SOURCE_CN.md
 +++ b/docs/BUILD_FROM_SOURCE_CN.md
 @@ -35,6 +35,7 @@ sha256sum rodin-device-tree-*.tar.zst
@@ -1407,7 +1454,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..8e4f45ddd32b874811a52f2b0d6a94d5
  
  recovery patch 包含：
  
-@@ -109,6 +153,31 @@ recovery patch 包含：
+@@ -109,6 +153,34 @@ recovery patch 包含：
  - rodin 解密后禁止完整 GUI package 重建，避免 recovery `SIGSEGV`。
  - 解密页面显示前加载默认简体中文。
  - MiSans 主题选择项和 SIH6887 震动节点支持。
@@ -1434,12 +1481,15 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..8e4f45ddd32b874811a52f2b0d6a94d5
 +  MTK wrapper 长度字段。构建主机必须提供 `device-tree-compiler`（`fdtget`、`fdtput`）。
 +- Recovery 二阶段 `libprocessgroup_setup.so` 的构建来源修复，并在最终重打包前验证其
 +  ELF magic；若该检查失败，停止构建，不能刷写输出目录中遗留的旧镜像。
++- `mi_ext` 使用 v2 fstab 第一列的原始逻辑分区名完成 mapper 创建和拆除；Recovery fstab
++  不解析 Android init 的 `ro,bind` / `overlay` 行。KeyMint 的只读 `persist` 挂载会 bind
++  到 `/persist`，OrangeFox 只读取、不写入该安全存储。
 +- Virtual A/B `Format Data` 时保留 `vendor -> vendor_a` 等无槽位 mapper 别名，避免在 pending-merge 检查前错误删除别名而中止格式化；`*_a`/`*_b` 与 `-cow` 的精确清理不变。
 +- Android 16 FBE 已解密后，先用 Recovery 内置 `dmctl` 释放 `/dev/block/mapper/userdata`，确认映射消失后才格式化物理 userdata 分区；删除失败会中止操作。
  
  在干净源码中执行：
  
-@@ -116,12 +185,21 @@ recovery patch 包含：
+@@ -116,12 +188,21 @@ recovery patch 包含：
  device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
  ```
  
@@ -1462,7 +1512,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..8e4f45ddd32b874811a52f2b0d6a94d5
  ## 6. 准备 stock vendor_boot 输入
  
  不要从网络上随便下载其他版本的 `vendor_boot`。优先使用当前系统 OTA/分区备份中提取的镜像。
-@@ -160,6 +238,19 @@ ls -lh "$PRODUCT_TMP"
+@@ -160,6 +241,19 @@ ls -lh "$PRODUCT_TMP"
  
  当前已验证输入的哈希见 [prebuilt/README.md](../prebuilt/README.md)。
  
@@ -1482,7 +1532,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..8e4f45ddd32b874811a52f2b0d6a94d5
  ## 7. 为什么不能直接使用普通 vendorbootimage
  
  rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeFox `vendorbootimage` 生成的是 recovery 中间布局，直接刷入可能导致 Recovery 可启动但 Android 无法启动。
-@@ -171,6 +262,13 @@ rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeF
+@@ -171,6 +265,13 @@ rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeF
  3. stock DTB、header 参数和 cmdline。
  4. 64 MiB AVB hash footer。
  
@@ -1496,7 +1546,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..8e4f45ddd32b874811a52f2b0d6a94d5
  `build-lowmem.sh` 会在 OrangeFox 编译成功后自动执行 `tools/build-system-compatible-vendor-boot.sh`。不要绕过该步骤。
  
  ## 8. 构建前预检
-@@ -206,6 +304,33 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
+@@ -206,6 +307,33 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
    device/xiaomi/rodin/build-lowmem.sh vendorbootimage
  ```
  
@@ -1530,7 +1580,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..8e4f45ddd32b874811a52f2b0d6a94d5
  低内存机器可以把 `OF_BUILD_JOBS` 降到 `1` 或 `2`。构建过程中不要清理 `/tmp`，也不要删除 `out/target/product/rodin/recovery`。
  
  成功后只使用：
-@@ -214,6 +339,12 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
+@@ -214,6 +342,12 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
  out/target/product/rodin/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img
  ```
  
@@ -1543,7 +1593,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..8e4f45ddd32b874811a52f2b0d6a94d5
  不要刷生成过程中的：
  
  - `vendor_ramdisk_recovery.cpio`
-@@ -257,7 +388,8 @@ file "$VERIFY/vendor_ramdisk00" "$VERIFY/vendor_ramdisk01"
+@@ -257,7 +391,8 @@ file "$VERIFY/vendor_ramdisk00" "$VERIFY/vendor_ramdisk01"
  - `vendor_ramdisk01`：type-2，name=`recovery`，最多 7 个补充模块。
  - 两者都是 LZ4 legacy。
  - combined vendor ramdisk 小于 60,000,000 字节。
@@ -1623,10 +1673,10 @@ index ec807e7ca7379874a6c7ea776033f18a4a1da62b..fc0bea6dc0eee510f0b4a1e30bb50b55
  
 diff --git a/docs/DEVICE_TREE_PATCHES_CN.md b/docs/DEVICE_TREE_PATCHES_CN.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..693272408b9aaa08a56b212ea561c8fbf868a06a
+index 0000000000000000000000000000000000000000..ed44e19bb15cb6273c3cbda85ff40dc516506c0f
 --- /dev/null
 +++ b/docs/DEVICE_TREE_PATCHES_CN.md
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,148 @@
 +# rodin 设备树补丁说明
 +
 +## 范围
@@ -1663,6 +1713,17 @@ index 0000000000000000000000000000000000000000..693272408b9aaa08a56b212ea561c8fb
 +安全检查。构建后若 Format Data 日志出现
 +`skipping logical partition alias: vendor`，说明已命中该保护；若仍出现
 +`removing dynamic partition: vendor`，刷入的仍是旧镜像或共享 patch 未应用。
++
++rodin 的 `mi_ext` 是另一个需要保留 fstab 原始分区名的逻辑分区：它挂载到
++`/mnt/vendor/mi_ext`，但逻辑分区名是 `mi_ext`，不是由挂载路径去掉 `/` 后得到的名称。
++共享 patch 会保存 v2 fstab 第一列并用于 mapper 创建和拆除；Recovery 专用 fstab 则排除
++Android init 专用的 `ro,bind` 和 `overlay` 行。这样不会把 `/mi_ext` 误解析为文件系统，也
++不会在 Format Data / pending-merge 路径上错误处理 `mi_ext_b`。
++
++`persist` 由 stock KeyMint init 路径以 `ro,noload` 挂载到 `/mnt/vendor/persist`。设备树
++在 Recovery 根目录创建 `/persist` 的只读 bind alias，`twrp.flags` 同样固定为
++`ro,noload`；共享 patch 因此只从该路径读取早期 OrangeFox 设置，而不会回放 journal 或写入
++安全存储。不得将其改成普通可写的 `/persist` fstab 项。
 +
 +FBE 已解密后的 `userdata` mapper 与动态分区不是同一类对象，不能由
 +`Unmap_Super_Devices()` 的兜底扫描删除。rodin 在 `BoardConfig.mk` 启用
@@ -1765,7 +1826,7 @@ index 0000000000000000000000000000000000000000..693272408b9aaa08a56b212ea561c8fb
 +
 +Global 输出为 `OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img`，不能用于 CN；默认 CN 输出也不能用于 Global。repacker 会将最终 Recovery fragment 中的 7 个 ABI 相关模块与由 Global 输入和固定偏移 patch 生成的预期内容逐字节比较；若复用了 CN 的 recovery fragment，构建会停止而不会输出 Global 成品。
 diff --git a/docs/TROUBLESHOOTING_CN.md b/docs/TROUBLESHOOTING_CN.md
-index c3bc639b90ea2af3be935a8e397f842c59b50c40..0d2d4c781afaad3e0718558b24a00cce1931e0e5 100644
+index c3bc639b90ea2af3be935a8e397f842c59b50c40..05ab3d214de43cb7d1eb046d93cfd1bbbc852c87 100644
 --- a/docs/TROUBLESHOOTING_CN.md
 +++ b/docs/TROUBLESHOOTING_CN.md
 @@ -135,10 +135,52 @@ adb shell 'file /twres/fonts/MiSans.ttf'
@@ -1822,7 +1883,7 @@ index c3bc639b90ea2af3be935a8e397f842c59b50c40..0d2d4c781afaad3e0718558b24a00cce
  立即回退：
  
  ```bash
-@@ -148,7 +190,60 @@ fastboot reboot
+@@ -148,7 +190,84 @@ fastboot reboot
  
  不要在未确认原因前刷另一槽位。
  
@@ -1880,7 +1941,31 @@ index c3bc639b90ea2af3be935a8e397f842c59b50c40..0d2d4c781afaad3e0718558b24a00cce
 +ioctl 失败报告为 slot 切换失败。不要通过手工删除 mapper 节点或强制擦写 `super` 来
 +绕过该错误。
 +
-+## 13. 最小日志包
++## 13. `mi_ext` 等非同名逻辑分区无法挂载
++
++rodin 的 stock fstab 将逻辑分区 `mi_ext` 挂载到 `/mnt/vendor/mi_ext`。旧版
++Recovery 从挂载路径生成逻辑分区名，错误请求 `mnt/vendor/mi_ext_b`；实际设备只存在
++`mi_ext_b`，所以日志会显示：
++
++```text
++Trying to prepare mnt/vendor/mi_ext from super partition
++unable to update logical partition: /mnt/vendor/mi_ext
++```
++
++当前 patch 保留 v2 fstab 第一列的原始逻辑名，并在映射与卸载 super 分区时使用它，
++因此应显示 `Trying to prepare mi_ext from super partition`。Recovery 专用 fstab 同时
++删除 `ro,bind` 和 `overlay` 这类仅由 Android init 处理的行，避免 TWRP 把 `/mi_ext`
++误认为文件系统类型。该修复不改写 super、userdata 或 stock first-stage fstab。
++
++同一启动日志中，`/persist` 以前会因 `/mnt/vendor/persist` 已由 KeyMint 的 init 脚本
++以 `ro,noload` 挂载，又被 TWRP 尝试挂载到 `/persist` 而失败。Recovery 现在仅将已有
++的安全只读挂载 bind 到 `/persist`，并跳过 OrangeFox 对该路径的写入；原始
++`/mnt/vendor/persist`、journal 策略和 KeyMint 路径均不变。
++
++未插入 SD 卡或 USB 存储设备时，`/auto*`、`/external_sd`、`/usb_otg` 的挂载失败是
++预期状态，不是分区错误。
++
++## 14. 最小日志包
  
  ```bash
  LOGDIR="logs/$(date +%F-%H%M%S)"
@@ -1960,7 +2045,7 @@ index 9b2c9c592488b5b0a89f26ce0d360ba162441f6e..df6f7660d73e56c2bd882e0b716c01b0
  然后手动构建：
  
 diff --git a/manifests/device-blobs.sha256 b/manifests/device-blobs.sha256
-index 21642f276e9b0a8f85e9cc6cac2a3574dd81a1e2..22eb752e1fdcfe96eba09d70703b4bb2eaf3cb71 100644
+index 21642f276e9b0a8f85e9cc6cac2a3574dd81a1e2..a6ccd50db2c5bd92a1ce50aa1380114cf36c898c 100644
 --- a/manifests/device-blobs.sha256
 +++ b/manifests/device-blobs.sha256
 @@ -1,6 +1,14 @@
@@ -1987,17 +2072,20 @@ index 21642f276e9b0a8f85e9cc6cac2a3574dd81a1e2..22eb752e1fdcfe96eba09d70703b4bb2
  c0bc22a0c7158cb92f9720f7d74f7e38861d98e7dac4c726e70da302f2a195c8  device/xiaomi/rodin/recovery/root/init.recovery.hardware.rc
 -13cf7c84489e73e63288f1fe396098a2fba9c45349f6859694acfddc911f4aec  device/xiaomi/rodin/recovery/root/init.recovery.keymint.rc
 -0214fc6029af72c2c38e22cfbe5e64422d23096c317758ccf531cea4235fd1b5  device/xiaomi/rodin/recovery/root/init.recovery.mt6899.rc
-+7a08e217122beb7c349b49df0985ecdbe98d1cada7f766c5fdb9961fee803ac3  device/xiaomi/rodin/recovery/root/init.recovery.keymint.rc
++83ae9f0f252190f4e324171ae611d0aaf6cba5cca2638af2ac38f524969fc5c8  device/xiaomi/rodin/recovery/root/init.recovery.keymint.rc
 +5dbbf5b7f09369becd9a8fd39db521840f62563c95d6f0bca73cee4bfa28c85d  device/xiaomi/rodin/recovery/root/init.recovery.mt6899.rc
  e9dde5655db30dcce1a8abf7a23c7db907790d791a625559a14257aad3323846  device/xiaomi/rodin/recovery/root/init.recovery.project.rc
  84ee9b33a5011c5837a20f25b2ba68af8c4a971707a3befb9d3d3642d0df170b  device/xiaomi/rodin/recovery/root/init.recovery.usb.rc
  216fcf14fdb61c43faa8ecedcd4b42cf96d8dc8fb2bb4c63f1db3af9a1516736  device/xiaomi/rodin/recovery/root/lib/modules/8250_mtk.ko
-@@ -325,7 +334,7 @@ cc5062290ee1f74f8da950ca9467625e0cd47fabbf6ba9027e7dc434a7c9b671  device/xiaomi/
+@@ -323,9 +332,9 @@ bdf0168dbb1d03a28a41d3a5ef484cd2b2a80abc389db3fe91461215b99ba410  device/xiaomi/
+ 561176fdcca2669f8e718f911bba59a745bd43f05083f2249b80e627b73a395d  device/xiaomi/rodin/recovery/root/system/etc/cgroups.json
+ cc5062290ee1f74f8da950ca9467625e0cd47fabbf6ba9027e7dc434a7c9b671  device/xiaomi/rodin/recovery/root/system/etc/event-log-tags
  046bb6ada4a68049d9c3af58d7909a0d12496f4117ce88628d27e832b8e98610  device/xiaomi/rodin/recovery/root/system/etc/init/android.hardware.fastboot-service.example_recovery.rc
- 62fefc24427bac964dfa6e92566f20051842d177f2abb072439ec3e072551810  device/xiaomi/rodin/recovery/root/system/etc/recovery.fstab
+-62fefc24427bac964dfa6e92566f20051842d177f2abb072439ec3e072551810  device/xiaomi/rodin/recovery/root/system/etc/recovery.fstab
++cb49d7b5e3cbc1a44ba9e04d33a9f1634ca96ce21edb919e581ff7a719b00577  device/xiaomi/rodin/recovery/root/system/etc/recovery.fstab
  3d7c39073503b41dd9c9cb777f67460768d845e6330bcda18ae0a52fb4ba3ad9  device/xiaomi/rodin/recovery/root/system/etc/task_profiles.json
 -295114ca38454013c4a85a0e11e688b1bada099727d4e034b372d8756389ef18  device/xiaomi/rodin/recovery/root/system/etc/twrp.flags
-+fcd249c22c10e174a8fdac9cc1dc397b7354b18925a85b335eb6b87014d4995d  device/xiaomi/rodin/recovery/root/system/etc/twrp.flags
++3d6aeaf3df64d525a004ca8babc04e817599a4e71e2bd5217c8e464e9f20b1fe  device/xiaomi/rodin/recovery/root/system/etc/twrp.flags
  e75201e0a0d2be1a5a13371a010b749ac6d66fe5dc2742fa4a0d13876d5e4312  device/xiaomi/rodin/recovery/root/system/etc/ueventd.rc
  d01d06cc43d3d6ef28f3bd4b2121967edb8bab0414e1cb7ffb5be9cb8525ee61  device/xiaomi/rodin/recovery/root/system/etc/vintf/manifest.xml
  3131029d0f2ee73c4dcb01429d0b8e46d8e1d3839216999dafa3eb6963441ddd  device/xiaomi/rodin/recovery/root/vendor/etc/ueventd.rc
@@ -2028,10 +2116,68 @@ index f63df0530e3090209a327a2774144003f42e803a..ace1e3861ea405d8f416c554b59f8cde
    <superproject name="platform/superproject" revision="android-14.0.0_r67"/>
    
 diff --git a/patches/orangefox-recovery.patch b/patches/orangefox-recovery.patch
-index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..df074074f783207d17710d0e4866139e05bbb3c6 100644
+index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..3e571240ac2824163ee0858594cc1db14a806994 100644
 --- a/patches/orangefox-recovery.patch
 +++ b/patches/orangefox-recovery.patch
-@@ -1,3 +1,46 @@
+@@ -1,3 +1,104 @@
++diff --git a/data.cpp b/data.cpp
++index 7ca8d86b..1a8bbe88 100755
++--- a/data.cpp
+++++ b/data.cpp
++@@ -369,25 +369,29 @@ int DataManager::SaveValues()
++   #ifndef OF_DEVICE_WITHOUT_PERSIST
++   if (PartitionManager.Mount_By_Path("/persist", false))
++     {
++-      #ifndef FOX_SETTINGS_ROOT_DIRECTORY
++-      mPersist.SetFile(PERSIST_SETTINGS_FILE);
++-      mPersist.SetFileVersion(FILE_VERSION);
++-      pthread_mutex_lock(&m_valuesLock);
++-      mPersist.SaveValues();
++-      pthread_mutex_unlock(&m_valuesLock);
++-      LOGINFO("Saved settings file values to %s\n", PERSIST_SETTINGS_FILE);
++-      #endif
++-
++-      ofstream file;
++-
++-      file.open(FOX_PASS_IN_PERSIST, std::ofstream::out | std::ofstream::trunc);
++-      if (file.is_open()) {
++-        file << "fox_use_pass="    + DataManager::GetStrValue("fox_use_pass") +
++-                "\nfox_pass_true=" + DataManager::GetStrValue("fox_pass_true") +
++-                "\nfox_pass_type=" + DataManager::GetStrValue("fox_pass_type");
++-        LOGINFO("PassBak: Created backup\n");
++-        file.close();
++-      } else LOGINFO("PassBak: Failed to backup\n");
+++      if (access("/persist/.", W_OK) == 0) {
+++        #ifndef FOX_SETTINGS_ROOT_DIRECTORY
+++        mPersist.SetFile(PERSIST_SETTINGS_FILE);
+++        mPersist.SetFileVersion(FILE_VERSION);
+++        pthread_mutex_lock(&m_valuesLock);
+++        mPersist.SaveValues();
+++        pthread_mutex_unlock(&m_valuesLock);
+++        LOGINFO("Saved settings file values to %s\n", PERSIST_SETTINGS_FILE);
+++        #endif
+++
+++        ofstream file;
+++
+++        file.open(FOX_PASS_IN_PERSIST, std::ofstream::out | std::ofstream::trunc);
+++        if (file.is_open()) {
+++          file << "fox_use_pass="    + DataManager::GetStrValue("fox_use_pass") +
+++                  "\nfox_pass_true=" + DataManager::GetStrValue("fox_pass_true") +
+++                  "\nfox_pass_type=" + DataManager::GetStrValue("fox_pass_type");
+++          LOGINFO("PassBak: Created backup\n");
+++          file.close();
+++        } else LOGINFO("PassBak: Failed to backup\n");
+++      } else {
+++        LOGINFO("Persist is mounted read-only; skipping OrangeFox settings write\n");
+++      }
++     }
++   #endif
++ 
++@@ -1833,4 +1837,3 @@ void DataManager::Leds(bool enable)
++     }
++ }
++ #endif
++-
 +diff --git a/gui/action.cpp b/gui/action.cpp
 +index 42e30797..aa568b97 100755
 +--- a/gui/action.cpp
@@ -2078,7 +2224,7 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..df074074f783207d17710d0e4866139e
  diff --git a/gui/gui.cpp b/gui/gui.cpp
  index 71bbc967..4291f2aa 100644
  --- a/gui/gui.cpp
-@@ -293,6 +336,61 @@ index 3d5cc9b3..fed8df35 100644
+@@ -293,6 +394,61 @@ index 3d5cc9b3..fed8df35 100644
   						[ -d "%fox_theme_path%" ] &amp;&amp; rm -rf %fox_theme_path%;
   						[[ '%update_navbar%' = '1' ]] || exit;
   					else
@@ -2140,7 +2286,7 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..df074074f783207d17710d0e4866139e
  diff --git a/gui/theme/portrait_hdpi/resources/images.xml b/gui/theme/portrait_hdpi/resources/images.xml
  index 1d8dec09..cf763f95 100644
  --- a/gui/theme/portrait_hdpi/resources/images.xml
-@@ -369,6 +467,226 @@ index 8e22b640..97a85fd9 100644
+@@ -369,6 +525,226 @@ index 8e22b640..97a85fd9 100644
   }
   
   void gr_clip(int x, int y, int w, int h)
@@ -2367,15 +2513,32 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..df074074f783207d17710d0e4866139e
  diff --git a/minuitwrp/include/minuitwrp/truetype.hpp b/minuitwrp/include/minuitwrp/truetype.hpp
  index 72b7620a..f096a230 100755
  --- a/minuitwrp/include/minuitwrp/truetype.hpp
-@@ -606,6 +924,405 @@ index 1f02b296..efb82ecd 100644
+@@ -606,6 +982,473 @@ index 1f02b296..efb82ecd 100644
   # whether to wipe /metadata after formatting data
   ifeq ($(OF_WIPE_METADATA_AFTER_DATAFORMAT),1)
      ifeq ($(TW_INCLUDE_FBE_METADATA_DECRYPT),true)
 +diff --git a/partition.cpp b/partition.cpp
-+index c437cc77..57b121af 100644
++index c437cc77..ce9ee933 100644
 +--- a/partition.cpp
 ++++ b/partition.cpp
-+@@ -2701,10 +2701,24 @@ bool TWPartition::Wipe_F2FS() {
++@@ -246,6 +246,7 @@ TWPartition::TWPartition() {
++ 	Sysfs_Entry = "";
++ 	Actual_Block_Device = "";
++ 	Primary_Block_Device = "";
+++	Logical_Partition_Name = "";
++ 	Alternate_Block_Device = "";
++ 	Removable = false;
++ 	Is_Present = false;
++@@ -381,6 +382,8 @@ bool TWPartition::Process_Fstab_Line(const char *fstab_line, bool Display_Error,
++ 					LOGERR("Until we get better BML support, you will have to find and provide the full block device path to the BML devices e.g. /dev/block/bml9 instead of the partition name\n");
++ 			} else {
++ 				Primary_Block_Device = ptr;
+++				if (fstab_version == 2 && *ptr != '/')
+++					Logical_Partition_Name = ptr;
++ 				if (*ptr == '/')
++ 					Find_Real_Block_Device(Primary_Block_Device, Display_Error);
++ 			}
++@@ -2701,10 +2704,24 @@ bool TWPartition::Wipe_F2FS() {
 + 	#endif
 + 
 + 	#ifdef OF_USE_DMCTL
@@ -2403,8 +2566,17 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..df074074f783207d17710d0e4866139e
 + 	}
 + 	#elif defined(FOX_USE_DMSETUP)
 + 	if (TWFunc::Path_Exists("/dev/block/mapper/userdata")) {
++@@ -3861,4 +3878,8 @@ bool TWPartition::Is_SlotSelect() {
++ string TWPartition::Get_Mount_Point() {
++ 	return Mount_Point;
++ }
+++
+++string TWPartition::Get_Logical_Partition_Name() {
+++	return Logical_Partition_Name;
+++}
++ //* 
 +diff --git a/partitionmanager.cpp b/partitionmanager.cpp
-+index 0ea3a125..e347aa7b 100755
++index 0ea3a125..1fcf82ee 100755
 +--- a/partitionmanager.cpp
 ++++ b/partitionmanager.cpp
 +@@ -25,7 +25,9 @@
@@ -2417,7 +2589,29 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..df074074f783207d17710d0e4866139e
 + #include <vector>
 + #include <dirent.h>
 + #include <time.h>
-+@@ -4875,13 +4877,25 @@ bool TWPartitionManager::Unmap_Super_Devices() {
++@@ -4653,7 +4655,9 @@ std::string TWPartitionManager::Get_Bare_Partition_Name(std::string Mount_Point)
++ 
++ bool TWPartitionManager::Prepare_Super_Volume(TWPartition* twrpPart) {
++     Fstab fstab;
++-	std::string bare_partition_name = Get_Bare_Partition_Name(twrpPart->Get_Mount_Point());
+++	std::string bare_partition_name = twrpPart->Get_Logical_Partition_Name();
+++	if (bare_partition_name.empty())
+++		bare_partition_name = Get_Bare_Partition_Name(twrpPart->Get_Mount_Point());
++ 
++ 	Super_Partition_List.push_back(bare_partition_name);
++ 	LOGINFO("Trying to prepare %s from super partition\n", bare_partition_name.c_str());
++@@ -4844,7 +4848,9 @@ bool TWPartitionManager::Unmap_Super_Devices() {
++ 		LOGINFO("Checking partition: %s\n", (*iter)->Get_Mount_Point().c_str());
++ 		if ((*iter)->Is_Super) {
++ 			TWPartition *part = *iter;
++-			std::string bare_partition_name = Get_Bare_Partition_Name((*iter)->Get_Mount_Point());
+++			std::string bare_partition_name = (*iter)->Get_Logical_Partition_Name();
+++			if (bare_partition_name.empty())
+++				bare_partition_name = Get_Bare_Partition_Name((*iter)->Get_Mount_Point());
++ 			std::string blk_device_partition = bare_partition_name;
++ 			if (DataManager::GetIntValue("of_ab_device") == 1 || DataManager::GetStrValue("tw_has_boot_slots") == "1")
++ 				blk_device_partition.append(PartitionManager.Get_Active_Slot_Suffix());
++@@ -4875,13 +4881,25 @@ bool TWPartitionManager::Unmap_Super_Devices() {
 + 		while ((de = readdir(d)) != NULL) {
 + 			if (de->d_type == DT_LNK) {
 + 				std::string partition = de->d_name;
@@ -2450,7 +2644,7 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..df074074f783207d17710d0e4866139e
 + 				}
 + 			}
 + 		}
-+@@ -4916,45 +4930,272 @@ bool TWPartitionManager::Check_Pending_Merges() {
++@@ -4916,45 +4934,272 @@ bool TWPartitionManager::Check_Pending_Merges() {
 + 	return true;
 + }
 + 
@@ -2749,6 +2943,26 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..df074074f783207d17710d0e4866139e
 + }
 + 
 + std::pair<string, string> TWPartitionManager::Get_Partition_Checksums(TWPartition* twrpPart) {
++diff --git a/partitions.hpp b/partitions.hpp
++index ea1f80b0..56970a7a 100644
++--- a/partitions.hpp
+++++ b/partitions.hpp
++@@ -182,6 +182,7 @@ public:
++ 	bool Is_SlotSelect();                                                     // Return whether the partition is a slot partition or not
++ 	bool Get_Super_Status();						  // Returns true if partition is a super volume mounted partitions
++ 	string Get_Mount_Point();						  // Return Mount_Point or directory the current partition is mounted on
+++	string Get_Logical_Partition_Name();                                     // Return the logical name preserved from a v2 fstab entry
++ 	void Set_Can_Be_Backed_Up(bool val);					  // Update whether the partition can be backed up or not
++ 	void Set_Can_Be_Wiped(bool val);					  // Update whether the partition can be wiped or not
++ 
++@@ -272,6 +273,7 @@ private:
++ 	bool Wildcard_Block_Device;                                               // If the block device contains an asterisk, we set this flag
++ 	string Sysfs_Entry;                                                       // For v2 fstab, if the "block device" starts with /devices then it is a sysfs entry that is handled by uevents
++ 	string Primary_Block_Device;                                              // Block device (e.g. /dev/block/mmcblk1p1)
+++	string Logical_Partition_Name;                                           // Original bare logical name, retained after mapper setup
++ 	string Alternate_Block_Device;                                            // Alternate block device (e.g. /dev/block/mmcblk1)
++ 	string Decrypted_Block_Device;                                            // Decrypted block device available after decryption
++ 	bool Removable;                                                           // Indicates if this partition is removable -- affects how often we check overall size, if present, etc.
 +diff --git a/prebuilt/Android.mk b/prebuilt/Android.mk
 +index a0240333..6961575c 100755
 +--- a/prebuilt/Android.mk
@@ -2955,7 +3169,7 @@ index 0000000000000000000000000000000000000000..0d7e548128be03bd9f1470cc5bf697c2
 +    seclabel u:r:hal_bootctl_default:s0
 +    interface aidl android.hardware.boot.IBootControl/default
 diff --git a/recovery/root/init.recovery.keymint.rc b/recovery/root/init.recovery.keymint.rc
-index 7570d8374f646f36f960331142ed2a49f4faae75..6e3dbb1bc7214c2acc11a954213d3a983f0f88a9 100644
+index 7570d8374f646f36f960331142ed2a49f4faae75..3b76df348f0c43daf6d5cb2adb36f71ba05ee474 100644
 --- a/recovery/root/init.recovery.keymint.rc
 +++ b/recovery/root/init.recovery.keymint.rc
 @@ -37,6 +37,8 @@ service rodin.omapi_bridge /system/bin/rodin_omapi_bridge
@@ -2967,7 +3181,16 @@ index 7570d8374f646f36f960331142ed2a49f4faae75..6e3dbb1bc7214c2acc11a954213d3a98
      seclabel u:r:recovery:s0
      disabled
  
-@@ -77,9 +79,7 @@ on fs
+@@ -53,6 +55,8 @@ service vendor.weaver_nxp /vendor/bin/hw/android.hardware.weaver-service.nxp
+ on fs
+     mkdir /mnt/vendor/persist 0755 root root
+     mount ext4 /dev/block/by-name/persist /mnt/vendor/persist ro noatime nosuid nodev wait noload
++    mkdir /persist 0755 root root
++    mount none /mnt/vendor/persist /persist bind
+     chmod 0660 /dev/tee0
+     chmod 0660 /dev/teepriv0
+     chmod 0660 /dev/rpmb0
+@@ -77,9 +81,7 @@ on fs
  on property:init.svc.tee-supplicant=running
      start vendor.keymint-mitee
      start vendor.secure_element_hal_service
@@ -2987,10 +3210,53 @@ index ad0c794e44cfe543a775e81b62d72e0bf27d3889..4f02c9fca8b56acd3bc5af6d0ca215bd
  import /init.recovery.keymint.rc
  
  service rodin-touch-loader /system/bin/load-touch-modules.sh
+diff --git a/recovery/root/system/etc/recovery.fstab b/recovery/root/system/etc/recovery.fstab
+index a97df1a64eeec75fbae05488b6035fc3814e94f1..1bd60cdaa5cf5e0a717ebcbf4b1d098e688052b3 100644
+--- a/recovery/root/system/etc/recovery.fstab
++++ b/recovery/root/system/etc/recovery.fstab
+@@ -19,29 +19,6 @@ product /product erofs ro wait,slotselect,avb,logical,first_stage_mount
+ product /product ext4 ro wait,slotselect,avb,logical,first_stage_mount
+ mi_ext /mnt/vendor/mi_ext erofs ro wait,slotselect,avb=vbmeta,logical,first_stage_mount,nofail
+ mi_ext /mnt/vendor/mi_ext ext4 ro wait,slotselect,avb=vbmeta,logical,first_stage_mount,nofail
+-/mnt/vendor/mi_ext /mi_ext erofs ro,bind wait,nofail
+-overlay /product/overlay overlay ro,lowerdir=/mnt/vendor/mi_ext/product/overlay/:/product/overlay check,nofail
+-overlay /product/app overlay ro,lowerdir=/mnt/vendor/mi_ext/product/app/:/product/app check,nofail
+-overlay /product/priv-app overlay ro,lowerdir=/mnt/vendor/mi_ext/product/priv-app/:/product/priv-app check,nofail
+-overlay /product/lib overlay ro,lowerdir=/mnt/vendor/mi_ext/product/lib/:/product/lib check,nofail
+-overlay /product/lib64 overlay ro,lowerdir=/mnt/vendor/mi_ext/product/lib64/:/product/lib64 check,nofail
+-overlay /product/bin overlay ro,lowerdir=/mnt/vendor/mi_ext/product/bin/:/product/bin check,nofail
+-overlay /product/framework overlay ro,lowerdir=/mnt/vendor/mi_ext/product/framework/:/product/framework check,nofail
+-overlay /product/media overlay ro,lowerdir=/mnt/vendor/mi_ext/product/media/:/product/media check,nofail
+-overlay /product/opcust overlay ro,lowerdir=/mnt/vendor/mi_ext/product/opcust/:/product/opcust check,nofail
+-overlay /product/data-app overlay ro,lowerdir=/mnt/vendor/mi_ext/product/data-app/:/product/data-app check,nofail
+-overlay /product/etc/sysconfig overlay ro,lowerdir=/mnt/vendor/mi_ext/product/etc/sysconfig/:/product/etc/sysconfig check,nofail
+-overlay /product/etc/permissions overlay ro,lowerdir=/mnt/vendor/mi_ext/product/etc/permissions/:/product/etc/permissions check,nofail
+-overlay /system/app overlay ro,lowerdir=/mnt/vendor/mi_ext/system/app/:/product/pangu/system/app/:/system/app check,nofail
+-overlay /system/priv-app overlay ro,lowerdir=/mnt/vendor/mi_ext/system/priv-app/:/product/pangu/system/priv-app/:/system/priv-app check,nofail
+-overlay /system/framework overlay ro,lowerdir=/product/pangu/system/framework/:/system/framework check,nofail
+-overlay /system/etc/sysconfig overlay ro,lowerdir=/mnt/vendor/mi_ext/system/etc/sysconfig/:/system/etc/sysconfig check,nofail
+-overlay /system/etc/permissions overlay ro,lowerdir=/mnt/vendor/mi_ext/system/etc/permissions/:/product/pangu/system/etc/permissions/:/system/etc/permissions check,nofail
+-overlay /product/usr overlay ro,lowerdir=/mnt/vendor/mi_ext/product/usr:/product/usr check,nofail
+-overlay /product/etc/precust_theme overlay ro,lowerdir=/mnt/vendor/mi_ext/product/etc/precust_theme:/product/etc/precust_theme check,nofail
+-overlay /product/etc/preferred-apps overlay ro,lowerdir=/mnt/vendor/mi_ext/product/etc/preferred-apps:/product/etc/preferred-apps check,nofail
+-overlay /product/etc/security overlay ro,lowerdir=/mnt/vendor/mi_ext/product/etc/security:/product/etc/security check,nofail
+-overlay /system_ext/etc/permissions overlay ro,lowerdir=/mnt/vendor/mi_ext/system_ext/etc/permissions:/system_ext/etc/permissions check,nofail
+ 
+ 
+ odm /odm erofs ro wait,slotselect,avb,logical,first_stage_mount
 diff --git a/recovery/root/system/etc/twrp.flags b/recovery/root/system/etc/twrp.flags
-index e3dacadbcff969f1d428720f92db1ece977ab39c..f3702502bdd167003fba1a981013efa9c8a7c291 100644
+index e3dacadbcff969f1d428720f92db1ece977ab39c..d2ab71cacd9f941d1889ea1ae1bf0c2be1d48631 100644
 --- a/recovery/root/system/etc/twrp.flags
 +++ b/recovery/root/system/etc/twrp.flags
+@@ -18,7 +18,7 @@
+ /misc               emmc      /dev/block/by-name/misc                                               flags=display="misc";backup=1
+ 
+ # Persistent Firmware & Properties
+-/persist            ext4      /dev/block/by-name/persist                                            flags=display="persist"
++/persist            ext4      /dev/block/by-name/persist                                            flags=display="persist";fsflags=ro,noload
+ /persist_image      emmc      /dev/block/by-name/persist                                            flags=display="persist";backup=1;flashimg=1
+ 
+ # Firmware partitions
 @@ -58,7 +58,12 @@
  
  # Removable Storage
@@ -3826,7 +4092,7 @@ index 0000000000000000000000000000000000000000..92283783e93a1668eba0c12623393bb0
 +if __name__ == "__main__":
 +    raise SystemExit(main())
 diff --git a/tools/verify-build-inputs.sh b/tools/verify-build-inputs.sh
-index 4550714d793a217d095da9a6cb69dc82de2a270a..518eb7583d76d4ed62806a7751f2668de65f3dc5 100755
+index 4550714d793a217d095da9a6cb69dc82de2a270a..968e6348e65d29d3d3cf4e4f74324d60da86f9a8 100755
 --- a/tools/verify-build-inputs.sh
 +++ b/tools/verify-build-inputs.sh
 @@ -10,7 +10,12 @@ fail() {
@@ -3856,8 +4122,8 @@ index 4550714d793a217d095da9a6cb69dc82de2a270a..518eb7583d76d4ed62806a7751f2668d
 -check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" d36b4ef38558113296fe4353d8374f5b8f700d829531f2b7139b74c7f7fdcfd9
 -check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 24054779376a52e037454daba105d5153202d92104ddf535f65fd58c06e3abe5
 +check_sha256 "${DEVICE_DIR}/patches/orangefox-vendor-twrp.patch" d845e7cc38d612fa838db94da6336820b48d2e4251e109ee7b4ef2f361d22158
-+check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 9fa406ed5206e3b341d3718cb9a74312cc03a03d11a50dbe4734751a0917fbb2
-+check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" b4d8a7b2457d2a61ff77313e25d1822435d2174cb095d0faa42f7f28e0800b23
++check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" b10e2e38df4d30058488832d6d4c50a574246bcef5b05944999285146636eb67
++check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 9a0f318a8df7a99a42e8c8ebac0891626cfd5ba8eba7936e3a7ec5b22931945a
  
  if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
      if ! python3 "${DEVICE_DIR}/tools/verify-source-manifest.py" "${TOP_DIR}" \
@@ -4080,7 +4346,7 @@ index 4550714d793a217d095da9a6cb69dc82de2a270a..518eb7583d76d4ed62806a7751f2668d
          search_tree "$marker" "${TOP_DIR}/bootable/recovery" || \
              fail "OrangeFox source patch marker missing: $marker"
      done
-@@ -206,6 +392,34 @@ if [[ -d "${TOP_DIR}/build/make" ]]; then
+@@ -206,6 +392,56 @@ if [[ -d "${TOP_DIR}/build/make" ]]; then
      fi
  fi
  
@@ -4111,6 +4377,28 @@ index 4550714d793a217d095da9a6cb69dc82de2a270a..518eb7583d76d4ed62806a7751f2668d
 +check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
 +    'DRM shutdown: pipeline torn down before resource release' \
 +    "Global DRM shutdown teardown is missing"
++check_contains "${TOP_DIR}/bootable/recovery/partitions.hpp" \
++    'Get_Logical_Partition_Name' \
++    "logical partition name accessor is missing"
++check_contains "${TOP_DIR}/bootable/recovery/partitionmanager.cpp" \
++    'twrpPart->Get_Logical_Partition_Name()' \
++    "logical super partition name is derived from its mount point"
++check_contains "${DEVICE_DIR}/recovery/root/system/etc/recovery.fstab" \
++    'mi_ext /mnt/vendor/mi_ext erofs ro wait,slotselect,avb=vbmeta,logical,first_stage_mount,nofail' \
++    "Recovery mi_ext logical partition entry is missing"
++if grep -qE '^(overlay |/mnt/vendor/mi_ext /mi_ext )' \
++        "${DEVICE_DIR}/recovery/root/system/etc/recovery.fstab"; then
++    fail "Recovery fstab must not contain Android init-only mi_ext bind or overlay entries"
++fi
++check_contains "${TOP_DIR}/bootable/recovery/data.cpp" \
++    'Persist is mounted read-only; skipping OrangeFox settings write' \
++    "read-only persist write guard is missing"
++check_contains "${DEVICE_DIR}/recovery/root/init.recovery.keymint.rc" \
++    'mount none /mnt/vendor/persist /persist bind' \
++    "Recovery persist bind alias is missing"
++check_contains "${DEVICE_DIR}/recovery/root/system/etc/twrp.flags" \
++    'flags=display="persist";fsflags=ro,noload' \
++    "Recovery persist must remain read-only and journal-safe"
 +
  if command -v file >/dev/null 2>&1 && [[ -f "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" ]]; then
      file "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" | grep -q 'TrueType Font data' || \

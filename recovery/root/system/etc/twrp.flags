@@ -18,7 +18,7 @@
 /misc               emmc      /dev/block/by-name/misc                                               flags=display="misc";backup=1
 
 # Persistent Firmware & Properties
-/persist            ext4      /dev/block/by-name/persist                                            flags=display="persist"
+/persist            ext4      /dev/block/by-name/persist                                            flags=display="persist";fsflags=ro,noload
 /persist_image      emmc      /dev/block/by-name/persist                                            flags=display="persist";backup=1;flashimg=1
 
 # Firmware partitions

@@ -243,7 +243,31 @@ stock AIDL BootControl 的新构建；旧 HIDL fallback 会在 rodin 上把 UFS 
 ioctl 失败报告为 slot 切换失败。不要通过手工删除 mapper 节点或强制擦写 `super` 来
 绕过该错误。
 
-## 13. 最小日志包
+## 13. `mi_ext` 等非同名逻辑分区无法挂载
+
+rodin 的 stock fstab 将逻辑分区 `mi_ext` 挂载到 `/mnt/vendor/mi_ext`。旧版
+Recovery 从挂载路径生成逻辑分区名，错误请求 `mnt/vendor/mi_ext_b`；实际设备只存在
+`mi_ext_b`，所以日志会显示：
+
+```text
+Trying to prepare mnt/vendor/mi_ext from super partition
+unable to update logical partition: /mnt/vendor/mi_ext
+```
+
+当前 patch 保留 v2 fstab 第一列的原始逻辑名，并在映射与卸载 super 分区时使用它，
+因此应显示 `Trying to prepare mi_ext from super partition`。Recovery 专用 fstab 同时
+删除 `ro,bind` 和 `overlay` 这类仅由 Android init 处理的行，避免 TWRP 把 `/mi_ext`
+误认为文件系统类型。该修复不改写 super、userdata 或 stock first-stage fstab。
+
+同一启动日志中，`/persist` 以前会因 `/mnt/vendor/persist` 已由 KeyMint 的 init 脚本
+以 `ro,noload` 挂载，又被 TWRP 尝试挂载到 `/persist` 而失败。Recovery 现在仅将已有
+的安全只读挂载 bind 到 `/persist`，并跳过 OrangeFox 对该路径的写入；原始
+`/mnt/vendor/persist`、journal 策略和 KeyMint 路径均不变。
+
+未插入 SD 卡或 USB 存储设备时，`/auto*`、`/external_sd`、`/usb_otg` 的挂载失败是
+预期状态，不是分区错误。
+
+## 14. 最小日志包
 
 ```bash
 LOGDIR="logs/$(date +%F-%H%M%S)"

@@ -35,6 +35,17 @@
 `skipping logical partition alias: vendor`，说明已命中该保护；若仍出现
 `removing dynamic partition: vendor`，刷入的仍是旧镜像或共享 patch 未应用。
 
+rodin 的 `mi_ext` 是另一个需要保留 fstab 原始分区名的逻辑分区：它挂载到
+`/mnt/vendor/mi_ext`，但逻辑分区名是 `mi_ext`，不是由挂载路径去掉 `/` 后得到的名称。
+共享 patch 会保存 v2 fstab 第一列并用于 mapper 创建和拆除；Recovery 专用 fstab 则排除
+Android init 专用的 `ro,bind` 和 `overlay` 行。这样不会把 `/mi_ext` 误解析为文件系统，也
+不会在 Format Data / pending-merge 路径上错误处理 `mi_ext_b`。
+
+`persist` 由 stock KeyMint init 路径以 `ro,noload` 挂载到 `/mnt/vendor/persist`。设备树
+在 Recovery 根目录创建 `/persist` 的只读 bind alias，`twrp.flags` 同样固定为
+`ro,noload`；共享 patch 因此只从该路径读取早期 OrangeFox 设置，而不会回放 journal 或写入
+安全存储。不得将其改成普通可写的 `/persist` fstab 项。
+
 FBE 已解密后的 `userdata` mapper 与动态分区不是同一类对象，不能由
 `Unmap_Super_Devices()` 的兜底扫描删除。rodin 在 `BoardConfig.mk` 启用
 `OF_USE_DMCTL := 1`，将 `dmctl` 放入 Recovery；共享 patch 只在确认格式化 `/data` 时
