@@ -17,16 +17,24 @@
 
 You can gou the prebuilt image from release
 
-Support:
+***
 
--  **✅Data decrypt (FBE)**
--  **✅USB OTG storage**
+**Works:**
+
+-  **✅Data decrypt (FBE,MiTEE)**
+-  **✅MTP,ADB,USB-OTG**
 -  **✅Battery and temperature display**
 -  **✅Screen brightness adjustment**
 -  **✅Vibration & Touch**
 -  **✅Multiple languages(include Chinese)**
 -  **✅Backup & Restore**
 -  **✅Flashing ZIP or Image**
+
+**Not works:**
+
+- **❓Global device cant unlock screen?(still need test)**
+
+***
 
 The vendor metadata remains Android 15 because the Android 16 system uses an
 Android 15 vendor/GKI base.
