@@ -4,98 +4,32 @@
 
 ## Device and firmware base
 
-- Model: `24129RT7CC`
-- SoC: MediaTek MT6899 / Dimensity 8400 Ultra
-- Kernel: `6.6.77-android15-8-gca30f3b4bef6-abogki440974771-4k`
-- Layout: A/B, dynamic partitions, virtual A/B userspace snapshots
-- Recovery location: vendor boot header v4, named `recovery` fragment
-- Vendor base: `OS3.0.303.0.WOJCNXM`, Android 15 / API 35
-- Installed system reported by the owner: Android 16 HyperOS
-- Display: `1220x2712`; OrangeFox theme coordinate space: `1080x2400`
+| Item                | Value                                                        |
+| ----------------- | -------------------------------------------------------- |
+| Model             | `rodin`                                                  |
+| SoC               | MediaTek MT6899 / Dimensity 8400 Ultra                   |
+| Kernel            | `6.6.*`                                                  |
+| Layout            | A/B, dynamic partitions, virtual A/B userspace snapshots |
+| Recovery location | vendor boot header v4, named `recovery` fragment         |
+| Vendor base       | `OS3.0.303.0.WOJCNXM`, Android 15 / API 35               |
+| Installed system  | Android 16 HyperOS 3                                     |
+| Display           | `1220×2712`                                              |
+
+You can gou the prebuilt image from release
 
 Support:
 
--  **Data decrypt (FBE)**
--  **USB OTG storage**
--  **Battery and temperature display**
--  **Screen brightness adjustment**
--  **Multiple languages(include Chinese)**
+-  **✅Data decrypt (FBE)**
+-  **✅USB OTG storage**
+-  **✅Battery and temperature display**
+-  **✅Screen brightness adjustment**
+-  **✅Vibration & Touch**
+-  **✅Multiple languages(include Chinese)**
+-  **✅Backup & Restore**
+-  **✅Flashing ZIP or Image**
 
 The vendor metadata remains Android 15 because the Android 16 system uses an
 Android 15 vendor/GKI base.
-
-USB OTG resolves devices dynamically from `/sys/block`: only SCSI disks whose
-parent path contains `/usb` are eligible, their first partition is preferred,
-and the raw disk is used only when no partition exists. This prevents a fixed
-`/dev/block/sda1` assumption from mounting a non-USB device. FAT and exFAT
-continue to use the recovery's existing filesystem support. NTFS-3G is
-excluded until its compressed payload can be shown to remain inside the
-device's validated 60 MB combined-ramdisk limit. The Mount menu's "USB
-Storage" gadget action remains disabled because it is unrelated to host-mode
-OTG and would export phone storage to a computer.
-
-The same Type-C port cannot be a computer gadget and a USB host at once. On
-rodin, VBUS is not enabled until Recovery explicitly selects host mode, so
-automatic Type-C role detection cannot discover an unpowered flash drive. The
-Mount page therefore exposes a USB floating button only on hardware with the
-required `otg_enable`, `vbus_switch`, and role-switch nodes. Disconnect the
-computer, tap the USB button, then attach the OTG drive within twenty seconds;
-the icon becomes an X while host mode is active. Recovery sets the Type-C
-preference to source, unbinds the gadget, enables both charger OTG policy and
-the `usb-otg-vbus` regulator through `vbus_switch`, and waits for a USB-bus
-disk. A failed
-attempt, pressing X, or later drive removal restores
-device mode and the previous MTP state automatically. The monitor never reads
-the role-switch `role` attribute while in host mode because this kernel can
-block that read indefinitely.
-
-The Global OS3.0.301.0.WOJMIXM image is built from its own platform ramdisk.
-Its stock DTB is byte-identical to the CN baseline, while its modules use the
-6.6.89 ABI rather than CN's 6.6.77. Before Make assembles the recovery root,
-the build creates a patched seven-module Global source directory and directs
-`PRODUCT_COPY_FILES` to it. This makes the module set independent of callback
-ordering. The repacker also fails unless Global's Type-C/OTG stack exposes
-`vbus_switch`; do not flash the CN image on Global firmware. Global's DRM
-profile retains the normal `blanktimer -> gr_fb_blank()` state machine and does
-not define `TW_NO_SCREEN_BLANK`. After the initial full atomic setup, its
-screen-off commit changes only the CRTC `ACTIVE` property, retaining the
-connector, mode, and plane bindings. The screen-on commit then re-submits the
-complete mode, connector, and plane state without first detaching that
-pipeline, so the MTK driver receives its panel resume path while avoiding the
-stock-Global restore failure caused by a full teardown/rebuild on every lock.
-Recovery exit still performs one complete atomic teardown before releasing its
-mode and framebuffer objects.
-
-The stock DTB additionally makes the xHCI node depend on Android's USB audio
-offload service. Recovery deliberately does not load that audio/modem stack;
-without the service, MTU3 logs `offload not ready` and never registers a host
-bus even after Type-C reaches `Attached.SRC`. The vendor-boot repacker removes
-only `mediatek,usb-offload` from a temporary copy of the wrapped stock DTB,
-then updates the wrapper lengths before signing. The stock DTB remains
-unchanged, and the normal xHCI host path needs no extra recovery modules.
-
-For the first on-device test, boot recovery and verify the computer-side state
-first:
-
-```bash
-adb shell 'lsmod | grep -E "xhci|mtu3|usb"'
-adb shell 'cat /sys/class/typec/port0/power_role; cat /sys/class/usb_role/11201000.usb0-role-switch/role'
-```
-
-Then disconnect the computer, open **Mount**, tap the USB floating button, and
-attach one OTG flash drive within twenty seconds. Inspect `/usb_otg` from the
-Recovery file manager. ADB deliberately disconnects while host mode is active.
-Press the X button or unplug the drive before reconnecting the computer,
-then verify the selected block device and transition log:
-
-```bash
-adb shell 'for d in /sys/block/sd*/device; do readlink -f "$d"; done 2>/dev/null | grep /usb'
-adb shell 'grep -E "USB OTG|usb_otg" /tmp/recovery.log | tail -100'
-```
-
-The expected mount point is `/usb_otg`. Test FAT and exFAT media. A drive that
-draws more current than the phone can supply requires a powered hub; that is a
-power limitation, not a filesystem failure.
 
 Build and porting documentation:
 
@@ -111,6 +45,24 @@ The vendor boot layout, MediaTek HALs, firmware, and kernel modules follow
 [`KSN2redawew/android_device_xiaomi_rodin-twrp`](https://github.com/KSN2redawew/android_device_xiaomi_rodin-twrp)
 at commit `50c9afc`. Firmware-specific boot data comes from the supplied
 Android 16 HyperOS partition dump.
+
+## Build
+
+```bash
+export ALLOW_MISSING_DEPENDENCIES=true
+export FOX_BUILD_DEVICE=rodin
+export FOX_AB_DEVICE=1
+export FOX_VIRTUAL_AB_DEVICE=1
+export OF_FORCE_PREBUILT_KERNEL=1
+
+OF_BUILD_JOBS=8 GOMEMLIMIT=10GiB \
+    device/xiaomi/rodin/build-lowmem.sh adbd vendorbootimage
+```
+
+Soong can use more than 16 GiB while regenerating the build graph. On a 24 GiB
+host, keep at least 12 GiB of swap enabled. The low-memory wrapper also runs
+`tools/build-system-compatible-vendor-boot.sh`; a direct `mka vendorbootimage`
+only creates an intermediate recovery-only layout and must not be flashed.
 
 ## Vendor boot layout
 
@@ -220,23 +172,6 @@ disabled. The Android 15 NDK interface libraries are isolated under
 source-built Weaver interface under `/system/lib64`. On-device testing confirms
 that the lockscreen credential decrypts FBE user 0 and mounts `/data` read-write.
 
-## Build
-
-```bash
-export ALLOW_MISSING_DEPENDENCIES=true
-export FOX_BUILD_DEVICE=rodin
-export FOX_AB_DEVICE=1
-export FOX_VIRTUAL_AB_DEVICE=1
-export OF_FORCE_PREBUILT_KERNEL=1
-
-OF_BUILD_JOBS=8 GOMEMLIMIT=10GiB \
-    device/xiaomi/rodin/build-lowmem.sh adbd vendorbootimage
-```
-
-Soong can use more than 16 GiB while regenerating the build graph. On a 24 GiB
-host, keep at least 12 GiB of swap enabled. The low-memory wrapper also runs
-`tools/build-system-compatible-vendor-boot.sh`; a direct `mka vendorbootimage`
-only creates an intermediate recovery-only layout and must not be flashed.
 
 ## GitHub Actions
 
