@@ -180,6 +180,81 @@ disabled. The Android 15 NDK interface libraries are isolated under
 source-built Weaver interface under `/system/lib64`. On-device testing confirms
 that the lockscreen credential decrypts FBE user 0 and mounts `/data` read-write.
 
+## USB-OTG
+
+USB OTG resolves devices dynamically from `/sys/block`: only SCSI disks whose
+parent path contains `/usb` are eligible, their first partition is preferred,
+and the raw disk is used only when no partition exists. This prevents a fixed
+`/dev/block/sda1` assumption from mounting a non-USB device. FAT and exFAT
+continue to use the recovery's existing filesystem support. NTFS-3G is
+excluded until its compressed payload can be shown to remain inside the
+device's validated 60 MB combined-ramdisk limit. The Mount menu's "USB
+Storage" gadget action remains disabled because it is unrelated to host-mode
+OTG and would export phone storage to a computer.
+
+The same Type-C port cannot be a computer gadget and a USB host at once. On
+rodin, VBUS is not enabled until Recovery explicitly selects host mode, so
+automatic Type-C role detection cannot discover an unpowered flash drive. The
+Mount page therefore exposes a USB floating button only on hardware with the
+required `otg_enable`, `vbus_switch`, and role-switch nodes. Disconnect the
+computer, tap the USB button, then attach the OTG drive within twenty seconds;
+the icon becomes an X while host mode is active. Recovery sets the Type-C
+preference to source, unbinds the gadget, enables both charger OTG policy and
+the `usb-otg-vbus` regulator through `vbus_switch`, and waits for a USB-bus
+disk. A failed
+attempt, pressing X, or later drive removal restores
+device mode and the previous MTP state automatically. The monitor never reads
+the role-switch `role` attribute while in host mode because this kernel can
+block that read indefinitely.
+
+The Global OS3.0.301.0.WOJMIXM image is built from its own platform ramdisk.
+Its stock DTB is byte-identical to the CN baseline, while its modules use the
+6.6.89 ABI rather than CN's 6.6.77. Before Make assembles the recovery root,
+the build creates a patched seven-module Global source directory and directs
+`PRODUCT_COPY_FILES` to it. This makes the module set independent of callback
+ordering. The repacker also fails unless Global's Type-C/OTG stack exposes
+`vbus_switch`; do not flash the CN image on Global firmware. Global's DRM
+profile retains the normal `blanktimer -> gr_fb_blank()` state machine and does
+not define `TW_NO_SCREEN_BLANK`. After the initial full atomic setup, its
+screen-off commit changes only the CRTC `ACTIVE` property, retaining the
+connector, mode, and plane bindings. The screen-on commit then re-submits the
+complete mode, connector, and plane state without first detaching that
+pipeline, so the MTK driver receives its panel resume path while avoiding the
+stock-Global restore failure caused by a full teardown/rebuild on every lock.
+Recovery exit still performs one complete atomic teardown before releasing its
+mode and framebuffer objects.
+
+The stock DTB additionally makes the xHCI node depend on Android's USB audio
+offload service. Recovery deliberately does not load that audio/modem stack;
+without the service, MTU3 logs `offload not ready` and never registers a host
+bus even after Type-C reaches `Attached.SRC`. The vendor-boot repacker removes
+only `mediatek,usb-offload` from a temporary copy of the wrapped stock DTB,
+then updates the wrapper lengths before signing. The stock DTB remains
+unchanged, and the normal xHCI host path needs no extra recovery modules.
+
+For the first on-device test, boot recovery and verify the computer-side state
+first:
+
+```bash
+adb shell 'lsmod | grep -E "xhci|mtu3|usb"'
+adb shell 'cat /sys/class/typec/port0/power_role; cat /sys/class/usb_role/11201000.usb0-role-switch/role'
+```
+
+Then disconnect the computer, open **Mount**, tap the USB floating button, and
+attach one OTG flash drive within twenty seconds. Inspect `/usb_otg` from the
+Recovery file manager. ADB deliberately disconnects while host mode is active.
+Press the X button or unplug the drive before reconnecting the computer,
+then verify the selected block device and transition log:
+
+```bash
+adb shell 'for d in /sys/block/sd*/device; do readlink -f "$d"; done 2>/dev/null | grep /usb'
+adb shell 'grep -E "USB OTG|usb_otg" /tmp/recovery.log | tail -100'
+```
+
+The expected mount point is `/usb_otg`. Test FAT and exFAT media. A drive that
+draws more current than the phone can supply requires a powered hub; that is a
+power limitation, not a filesystem failure.
+
 
 ## GitHub Actions
 
