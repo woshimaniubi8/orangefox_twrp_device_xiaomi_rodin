@@ -13,7 +13,9 @@
 - `BoardConfig.mk`、`patches/orangefox-vendor-twrp.patch` 与共享 Recovery patch：CN 保持原有
   atomic DRM 的完整 teardown/rebuild；Global 保留相同的 blanktimer/锁屏状态机，但首次完整 setup
   后锁屏只对 CRTC 提交 `ACTIVE=0`，不撤销 connector、mode 或 plane binding；唤醒时在保留
-  这些绑定的前提下重新提交完整 mode/connector/plane 状态，以触发 MTK 面板恢复。该编译开关经
+  这些绑定的前提下重新提交完整 mode/connector/plane 状态，并将扫描面切换到备用 framebuffer。
+  切换前会复制上一帧，避免 `gui_forceRender()` 前出现未初始化画面；该 framebuffer handoff 让
+  MTK atomic driver 观察到真实 plane 更新并触发面板恢复。该编译开关经
   `vendor/twrp` Soong 显式传给 `libminuitwrp`；仅在 Recovery 退出时完整 teardown 后释放
   mode/FB 资源，`TW_NO_SCREEN_BLANK` 仍禁止使用。
 - `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，先拉取 Git LFS blob，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。

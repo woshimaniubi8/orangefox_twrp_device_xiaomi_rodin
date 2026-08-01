@@ -219,8 +219,10 @@ not define `TW_NO_SCREEN_BLANK`. After the initial full atomic setup, its
 screen-off commit changes only the CRTC `ACTIVE` property, retaining the
 connector, mode, and plane bindings. The screen-on commit then re-submits the
 complete mode, connector, and plane state without first detaching that
-pipeline, so the MTK driver receives its panel resume path while avoiding the
-stock-Global restore failure caused by a full teardown/rebuild on every lock.
+pipeline and switches to the back framebuffer after copying the last frame.
+That forces a real plane update before the normal GUI redraw, so the MTK driver
+receives its panel resume path while avoiding the stock-Global restore failure
+caused by a full teardown/rebuild or reusing the same FB on every lock.
 Recovery exit still performs one complete atomic teardown before releasing its
 mode and framebuffer objects.
 

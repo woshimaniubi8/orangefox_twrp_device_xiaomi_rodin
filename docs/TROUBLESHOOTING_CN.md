@@ -139,9 +139,10 @@ adb shell 'file /twres/fonts/MiSans.ttf'
 
 Global 仍使用标准的 `blanktimer -> gr_fb_blank() -> atomic DRM` 链路，不使用亮度归零
 workaround。它只在完成首次完整 atomic setup 后，让锁屏提交 CRTC `ACTIVE=0` 并保留
-connector、mode 和 plane binding；唤醒时重新提交完整 mode/connector/plane 状态，使 MTK
-驱动执行面板恢复链路。这修复的是 Global stock 6.6.89 的完整 teardown/rebuild 后无法恢复
-面板的问题，而非绕开锁屏链路。
+connector、mode 和 plane binding；唤醒时重新提交完整 mode/connector/plane 状态，并切换到
+备用 framebuffer。切换前复制最后显示的一帧，随后原有 `gui_forceRender()` 立即绘制；这样
+MTK driver 能观察到真实的 plane FB 更新并执行面板恢复链路。这修复的是 Global 完整
+teardown/rebuild 或同一 FB 重提交流程后无法恢复面板的问题，而非绕开锁屏链路。
 Recovery 退出时则会先完整 teardown，再释放 mode blob 和 framebuffer，避免仍被 DRM 状态
 引用的资源被提前释放。
 
@@ -151,8 +152,9 @@ Recovery 退出时则会先完整 teardown，再释放 mode blob 和 framebuffer
 新的 Recovery 会在真实 atomic commit 处记录请求方向、connector/CRTC/plane 标识及返回值；
 锁屏和唤醒各应出现一行
 `DRM blank retained pipeline: ACTIVE=0`，随后是
-`DRM blank restore retained pipeline: full setup` 和成功 commit。若 stock Global
-仍无法唤醒，保留这组日志再修正 atomic 属性，不能重新启用亮度替代路径。
+`DRM blank restore retained pipeline: framebuffer handoff current=... displayed=...` 和成功
+commit。若 Global 仍无法唤醒，保留这一组 recovery 日志以及同一时段的 dmesg；不能重新启用
+亮度替代路径。
 
 从 ADB 进行一次可重复验证，再用物理电源键重复一次：
 

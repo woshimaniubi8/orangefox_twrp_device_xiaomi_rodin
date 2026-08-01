@@ -1,6 +1,6 @@
 diff --git a/.gitattributes b/.gitattributes
 new file mode 100644
-index 0000000000000000000000000000000000000000..cbc485f7664b025fc5f9d9a6c5dfea34605e9710
+index 0000000..cbc485f
 --- /dev/null
 +++ b/.gitattributes
 @@ -0,0 +1,3 @@
@@ -9,7 +9,7 @@ index 0000000000000000000000000000000000000000..cbc485f7664b025fc5f9d9a6c5dfea34
 +prebuilt/global/modules/*.ko filter=lfs diff=lfs merge=lfs -text
 diff --git a/.github/scripts/reclaim-github-hosted-space.sh b/.github/scripts/reclaim-github-hosted-space.sh
 new file mode 100644
-index 0000000000000000000000000000000000000000..4d00278f86665de142cfa2733c68c027924d1e7a
+index 0000000..4d00278
 --- /dev/null
 +++ b/.github/scripts/reclaim-github-hosted-space.sh
 @@ -0,0 +1,43 @@
@@ -57,7 +57,7 @@ index 0000000000000000000000000000000000000000..4d00278f86665de142cfa2733c68c027
 +echo "Filesystem after reclaim:"
 +df -h "${GITHUB_WORKSPACE:-$PWD}"
 diff --git a/.github/scripts/setup-swap.sh b/.github/scripts/setup-swap.sh
-index 4c486ebfd20c75758d945b22d7f606f4a4e14b20..ff831cd0dbc7ad3d308f2fe0c3c7f882fd35dbd7 100644
+index 4c486eb..ff831cd 100644
 --- a/.github/scripts/setup-swap.sh
 +++ b/.github/scripts/setup-swap.sh
 @@ -1,39 +1,78 @@
@@ -164,7 +164,7 @@ index 4c486ebfd20c75758d945b22d7f606f4a4e14b20..ff831cd0dbc7ad3d308f2fe0c3c7f882
 +
  free -h
 diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
-index 4ac7cc9a1f43a5cf8b9ab025db7b7d5193cabf91..78d09ce474b11fb5cfe05949b5d8fb74c28711dc 100644
+index 4ac7cc9..78d09ce 100644
 --- a/.github/workflows/build.yml
 +++ b/.github/workflows/build.yml
 @@ -1,227 +1,584 @@
@@ -898,7 +898,7 @@ index 4ac7cc9a1f43a5cf8b9ab025db7b7d5193cabf91..78d09ce474b11fb5cfe05949b5d8fb74
 +            --notes-file "$notes" \
 +            --prerelease
 diff --git a/Android.bp b/Android.bp
-index 963844ff8bd9c46c13916ed29dc343adbb5c4b7b..8aaa90d57fa447e01e99e135d56e68cc46e510d1 100644
+index 963844f..8aaa90d 100644
 --- a/Android.bp
 +++ b/Android.bp
 @@ -11,13 +11,36 @@ cc_library_shared {
@@ -941,7 +941,7 @@ index 963844ff8bd9c46c13916ed29dc343adbb5c4b7b..8aaa90d57fa447e01e99e135d56e68cc
          "libbinder_ndk",
          "liblog",
 diff --git a/BoardConfig.mk b/BoardConfig.mk
-index 70dfc378ad1fb0e02c422af23ef642168901f8ec..d231a028e32cd2a1716afc95ad21d887d0bb3e73 100644
+index 70dfc37..d231a02 100644
 --- a/BoardConfig.mk
 +++ b/BoardConfig.mk
 @@ -77,9 +77,12 @@ BOARD_USES_METADATA_PARTITION := true
@@ -992,7 +992,7 @@ index 70dfc378ad1fb0e02c422af23ef642168901f8ec..d231a028e32cd2a1716afc95ad21d887
  TW_RECOVERY_ADDITIONAL_RELINK_LIBRARY_FILES = \
      $(TARGET_OUT_SHARED_LIBRARIES)/libtrusty.so \
 diff --git a/README.md b/README.md
-index fc739b30db4fc0a534a908ba4749d6c7d5b5ee1a..08e521a571019898ffbfe690b6b7fcc1ebeff468 100644
+index fc739b3..b969338 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,9 +1,49 @@
@@ -1082,7 +1082,7 @@ index fc739b30db4fc0a534a908ba4749d6c7d5b5ee1a..08e521a571019898ffbfe690b6b7fcc1
  
  ## Vendor boot layout
  
-@@ -136,23 +180,138 @@ disabled. The Android 15 NDK interface libraries are isolated under
+@@ -136,23 +180,140 @@ disabled. The Android 15 NDK interface libraries are isolated under
  source-built Weaver interface under `/system/lib64`. On-device testing confirms
  that the lockscreen credential decrypts FBE user 0 and mounts `/data` read-write.
  
@@ -1126,8 +1126,10 @@ index fc739b30db4fc0a534a908ba4749d6c7d5b5ee1a..08e521a571019898ffbfe690b6b7fcc1
 +screen-off commit changes only the CRTC `ACTIVE` property, retaining the
 +connector, mode, and plane bindings. The screen-on commit then re-submits the
 +complete mode, connector, and plane state without first detaching that
-+pipeline, so the MTK driver receives its panel resume path while avoiding the
-+stock-Global restore failure caused by a full teardown/rebuild on every lock.
++pipeline and switches to the back framebuffer after copying the last frame.
++That forces a real plane update before the normal GUI redraw, so the MTK driver
++receives its panel resume path while avoiding the stock-Global restore failure
++caused by a full teardown/rebuild or reusing the same FB on every lock.
 +Recovery exit still performs one complete atomic teardown before releasing its
 +mode and framebuffer objects.
 +
@@ -1234,7 +1236,7 @@ index fc739b30db4fc0a534a908ba4749d6c7d5b5ee1a..08e521a571019898ffbfe690b6b7fcc1
  ## Controlled device test
  
 diff --git a/build-lowmem.sh b/build-lowmem.sh
-index fdd2932bad782292592294a49aad581ee86d4c49..684086335d2d0e8f2319f85184eb1cd5099450c7 100755
+index fdd2932..6840863 100755
 --- a/build-lowmem.sh
 +++ b/build-lowmem.sh
 @@ -29,6 +29,7 @@ export FOX_BUILD_DEVICE="${FOX_BUILD_DEVICE:-rodin}"
@@ -1307,7 +1309,7 @@ index fdd2932bad782292592294a49aad581ee86d4c49..684086335d2d0e8f2319f85184eb1cd5
  set -e
  
 diff --git a/device.mk b/device.mk
-index 79f478c5d73e98c2dd165b7f9d3c4c521dc01432..4dc5c7daf59628c37566aecaa76db0166399f0da 100644
+index 79f478c..4dc5c7d 100644
 --- a/device.mk
 +++ b/device.mk
 @@ -62,7 +62,23 @@ PRODUCT_PACKAGES_DEBUG += \
@@ -1354,7 +1356,7 @@ index 79f478c5d73e98c2dd165b7f9d3c4c521dc01432..4dc5c7daf59628c37566aecaa76db016
      $(DEVICE_PATH)/proprietary/odm/lib64/libtouchreport.so:recovery/root/system/lib64/rodin-touch/libtouchreport.so \
      $(DEVICE_PATH)/proprietary/odm/lib64/libtouchreport_alg_goodix.so:recovery/root/system/lib64/rodin-touch/libtouchreport_alg_goodix.so \
 diff --git a/docs/BLOBS_AND_PORTING_CN.md b/docs/BLOBS_AND_PORTING_CN.md
-index 2f227efa10fe58102c1c8b9c962778b65f354535..4b54819fad051cfe72c03de5529c14a77081de7d 100644
+index 2f227ef..4b54819 100644
 --- a/docs/BLOBS_AND_PORTING_CN.md
 +++ b/docs/BLOBS_AND_PORTING_CN.md
 @@ -34,7 +34,12 @@
@@ -1372,7 +1374,7 @@ index 2f227efa10fe58102c1c8b9c962778b65f354535..4b54819fad051cfe72c03de5529c14a7
  不能直接加载原始 `scp.ko`。实机 pstore 已确认它会在缺少 SCP reserved-memory 的 Recovery 环境中于 `scp_region_info_init()` 触发 kernel panic。
  
 diff --git a/docs/BUILD_FROM_SOURCE_CN.md b/docs/BUILD_FROM_SOURCE_CN.md
-index d28fd7e16bee62c7e9093d93a1ce421627418d0c..da3f339299bfe4422c98ceedce085358c88a9006 100644
+index d28fd7e..b9d32ed 100644
 --- a/docs/BUILD_FROM_SOURCE_CN.md
 +++ b/docs/BUILD_FROM_SOURCE_CN.md
 @@ -35,6 +35,7 @@ sha256sum rodin-device-tree-*.tar.zst
@@ -1454,7 +1456,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..da3f339299bfe4422c98ceedce085358
  
  recovery patch 包含：
  
-@@ -109,6 +153,34 @@ recovery patch 包含：
+@@ -109,6 +153,36 @@ recovery patch 包含：
  - rodin 解密后禁止完整 GUI package 重建，避免 recovery `SIGSEGV`。
  - 解密页面显示前加载默认简体中文。
  - MiSans 主题选择项和 SIH6887 震动节点支持。
@@ -1472,8 +1474,10 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..da3f339299bfe4422c98ceedce085358
 +  Global 输入，防止 CN recovery fragment 被误用；DTB 与 CN 基线完全相同，仍会移除 xHCI 的
 +  `mediatek,usb-offload` 属性。Global 保留原始的 `blanktimer -> gr_fb_blank()` 锁屏状态机，
 +  但首次完整配置 atomic DRM pipeline 后，后续锁屏只切换 CRTC `ACTIVE=0` 并保留 connector、
-+  mode 和 plane 绑定；唤醒时重新提交完整 mode/connector/plane 状态，触发 MTK 面板恢复，同时
-+  避免 stock 6.6.89 在完整 teardown/rebuild 后无法恢复面板。
++  mode 和 plane 绑定；唤醒时重新提交完整 mode/connector/plane 状态，并在该 atomic commit 中
++  切换到备用 framebuffer。切换前会复制上一帧，随后原有 `gui_forceRender()` 立即绘制；这让
++  MTK driver 观察到真实 plane 更新并触发面板恢复，同时避免 stock 6.6.89 在完整
++  teardown/rebuild 后无法恢复面板。
 +  仅 Recovery 退出时才完整拆除这些绑定，再释放 mode blob 和 framebuffer；
 +  `TW_NO_SCREEN_BLANK` 仍不得定义。
 +- stock DTB 的 xHCI 节点依赖 Android USB audio offload；Recovery 不加载其音频/基带依赖。
@@ -1489,7 +1493,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..da3f339299bfe4422c98ceedce085358
  
  在干净源码中执行：
  
-@@ -116,12 +188,21 @@ recovery patch 包含：
+@@ -116,12 +190,21 @@ recovery patch 包含：
  device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
  ```
  
@@ -1512,7 +1516,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..da3f339299bfe4422c98ceedce085358
  ## 6. 准备 stock vendor_boot 输入
  
  不要从网络上随便下载其他版本的 `vendor_boot`。优先使用当前系统 OTA/分区备份中提取的镜像。
-@@ -160,6 +241,19 @@ ls -lh "$PRODUCT_TMP"
+@@ -160,6 +243,19 @@ ls -lh "$PRODUCT_TMP"
  
  当前已验证输入的哈希见 [prebuilt/README.md](../prebuilt/README.md)。
  
@@ -1532,7 +1536,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..da3f339299bfe4422c98ceedce085358
  ## 7. 为什么不能直接使用普通 vendorbootimage
  
  rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeFox `vendorbootimage` 生成的是 recovery 中间布局，直接刷入可能导致 Recovery 可启动但 Android 无法启动。
-@@ -171,6 +265,13 @@ rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeF
+@@ -171,6 +267,13 @@ rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeF
  3. stock DTB、header 参数和 cmdline。
  4. 64 MiB AVB hash footer。
  
@@ -1546,7 +1550,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..da3f339299bfe4422c98ceedce085358
  `build-lowmem.sh` 会在 OrangeFox 编译成功后自动执行 `tools/build-system-compatible-vendor-boot.sh`。不要绕过该步骤。
  
  ## 8. 构建前预检
-@@ -206,6 +307,33 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
+@@ -206,6 +309,33 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
    device/xiaomi/rodin/build-lowmem.sh vendorbootimage
  ```
  
@@ -1580,7 +1584,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..da3f339299bfe4422c98ceedce085358
  低内存机器可以把 `OF_BUILD_JOBS` 降到 `1` 或 `2`。构建过程中不要清理 `/tmp`，也不要删除 `out/target/product/rodin/recovery`。
  
  成功后只使用：
-@@ -214,6 +342,12 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
+@@ -214,6 +344,12 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
  out/target/product/rodin/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img
  ```
  
@@ -1593,7 +1597,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..da3f339299bfe4422c98ceedce085358
  不要刷生成过程中的：
  
  - `vendor_ramdisk_recovery.cpio`
-@@ -257,7 +391,8 @@ file "$VERIFY/vendor_ramdisk00" "$VERIFY/vendor_ramdisk01"
+@@ -257,7 +393,8 @@ file "$VERIFY/vendor_ramdisk00" "$VERIFY/vendor_ramdisk01"
  - `vendor_ramdisk01`：type-2，name=`recovery`，最多 7 个补充模块。
  - 两者都是 LZ4 legacy。
  - combined vendor ramdisk 小于 60,000,000 字节。
@@ -1604,7 +1608,7 @@ index d28fd7e16bee62c7e9093d93a1ce421627418d0c..da3f339299bfe4422c98ceedce085358
  ## 11. 安全刷写与回退
  
 diff --git a/docs/COMPATIBILITY_CN.md b/docs/COMPATIBILITY_CN.md
-index ec807e7ca7379874a6c7ea776033f18a4a1da62b..fc0bea6dc0eee510f0b4a1e30bb50b55bc03da89 100644
+index ec807e7..fc0bea6 100644
 --- a/docs/COMPATIBILITY_CN.md
 +++ b/docs/COMPATIBILITY_CN.md
 @@ -26,7 +26,26 @@ rodin-OrangeFox-OS3.0.303.0-WOJCNXM-dual-touch-test.img
@@ -1673,10 +1677,10 @@ index ec807e7ca7379874a6c7ea776033f18a4a1da62b..fc0bea6dc0eee510f0b4a1e30bb50b55
  
 diff --git a/docs/DEVICE_TREE_PATCHES_CN.md b/docs/DEVICE_TREE_PATCHES_CN.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..ed44e19bb15cb6273c3cbda85ff40dc516506c0f
+index 0000000..8c1f825
 --- /dev/null
 +++ b/docs/DEVICE_TREE_PATCHES_CN.md
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,150 @@
 +# rodin 设备树补丁说明
 +
 +## 范围
@@ -1692,7 +1696,9 @@ index 0000000000000000000000000000000000000000..ed44e19bb15cb6273c3cbda85ff40dc5
 +- `BoardConfig.mk`、`patches/orangefox-vendor-twrp.patch` 与共享 Recovery patch：CN 保持原有
 +  atomic DRM 的完整 teardown/rebuild；Global 保留相同的 blanktimer/锁屏状态机，但首次完整 setup
 +  后锁屏只对 CRTC 提交 `ACTIVE=0`，不撤销 connector、mode 或 plane binding；唤醒时在保留
-+  这些绑定的前提下重新提交完整 mode/connector/plane 状态，以触发 MTK 面板恢复。该编译开关经
++  这些绑定的前提下重新提交完整 mode/connector/plane 状态，并将扫描面切换到备用 framebuffer。
++  切换前会复制上一帧，避免 `gui_forceRender()` 前出现未初始化画面；该 framebuffer handoff 让
++  MTK atomic driver 观察到真实 plane 更新并触发面板恢复。该编译开关经
 +  `vendor/twrp` Soong 显式传给 `libminuitwrp`；仅在 Recovery 退出时完整 teardown 后释放
 +  mode/FB 资源，`TW_NO_SCREEN_BLANK` 仍禁止使用。
 +- `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，先拉取 Git LFS blob，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。
@@ -1826,10 +1832,10 @@ index 0000000000000000000000000000000000000000..ed44e19bb15cb6273c3cbda85ff40dc5
 +
 +Global 输出为 `OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img`，不能用于 CN；默认 CN 输出也不能用于 Global。repacker 会将最终 Recovery fragment 中的 7 个 ABI 相关模块与由 Global 输入和固定偏移 patch 生成的预期内容逐字节比较；若复用了 CN 的 recovery fragment，构建会停止而不会输出 Global 成品。
 diff --git a/docs/TROUBLESHOOTING_CN.md b/docs/TROUBLESHOOTING_CN.md
-index c3bc639b90ea2af3be935a8e397f842c59b50c40..05ab3d214de43cb7d1eb046d93cfd1bbbc852c87 100644
+index c3bc639..bbe0437 100644
 --- a/docs/TROUBLESHOOTING_CN.md
 +++ b/docs/TROUBLESHOOTING_CN.md
-@@ -135,10 +135,52 @@ adb shell 'file /twres/fonts/MiSans.ttf'
+@@ -135,10 +135,54 @@ adb shell 'file /twres/fonts/MiSans.ttf'
  -DOF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT=1
  ```
  
@@ -1838,9 +1844,10 @@ index c3bc639b90ea2af3be935a8e397f842c59b50c40..05ab3d214de43cb7d1eb046d93cfd1bb
 +
 +Global 仍使用标准的 `blanktimer -> gr_fb_blank() -> atomic DRM` 链路，不使用亮度归零
 +workaround。它只在完成首次完整 atomic setup 后，让锁屏提交 CRTC `ACTIVE=0` 并保留
-+connector、mode 和 plane binding；唤醒时重新提交完整 mode/connector/plane 状态，使 MTK
-+驱动执行面板恢复链路。这修复的是 Global stock 6.6.89 的完整 teardown/rebuild 后无法恢复
-+面板的问题，而非绕开锁屏链路。
++connector、mode 和 plane binding；唤醒时重新提交完整 mode/connector/plane 状态，并切换到
++备用 framebuffer。切换前复制最后显示的一帧，随后原有 `gui_forceRender()` 立即绘制；这样
++MTK driver 能观察到真实的 plane FB 更新并执行面板恢复链路。这修复的是 Global 完整
++teardown/rebuild 或同一 FB 重提交流程后无法恢复面板的问题，而非绕开锁屏链路。
 +Recovery 退出时则会先完整 teardown，再释放 mode blob 和 framebuffer，避免仍被 DRM 状态
 +引用的资源被提前释放。
 +
@@ -1850,8 +1857,9 @@ index c3bc639b90ea2af3be935a8e397f842c59b50c40..05ab3d214de43cb7d1eb046d93cfd1bb
 +新的 Recovery 会在真实 atomic commit 处记录请求方向、connector/CRTC/plane 标识及返回值；
 +锁屏和唤醒各应出现一行
 +`DRM blank retained pipeline: ACTIVE=0`，随后是
-+`DRM blank restore retained pipeline: full setup` 和成功 commit。若 stock Global
-+仍无法唤醒，保留这组日志再修正 atomic 属性，不能重新启用亮度替代路径。
++`DRM blank restore retained pipeline: framebuffer handoff current=... displayed=...` 和成功
++commit。若 Global 仍无法唤醒，保留这一组 recovery 日志以及同一时段的 dmesg；不能重新启用
++亮度替代路径。
 +
 +从 ADB 进行一次可重复验证，再用物理电源键重复一次：
 +
@@ -1883,7 +1891,7 @@ index c3bc639b90ea2af3be935a8e397f842c59b50c40..05ab3d214de43cb7d1eb046d93cfd1bb
  立即回退：
  
  ```bash
-@@ -148,7 +190,84 @@ fastboot reboot
+@@ -148,7 +192,84 @@ fastboot reboot
  
  不要在未确认原因前刷另一槽位。
  
@@ -1970,7 +1978,7 @@ index c3bc639b90ea2af3be935a8e397f842c59b50c40..05ab3d214de43cb7d1eb046d93cfd1bb
  ```bash
  LOGDIR="logs/$(date +%F-%H%M%S)"
 diff --git a/fox_callback.sh b/fox_callback.sh
-index e13a0b27bfa947b3557ead61f04640662f7a2a08..8e7fa3b16efc50e59b7009899e79de7a331bce3f 100644
+index e13a0b2..8e7fa3b 100644
 --- a/fox_callback.sh
 +++ b/fox_callback.sh
 @@ -21,6 +21,28 @@ if [ -f "$minuitwrp_src" ]; then
@@ -2003,7 +2011,7 @@ index e13a0b27bfa947b3557ead61f04640662f7a2a08..8e7fa3b16efc50e59b7009899e79de7a
  # first-stage runtime and modules while pruning its duplicate recovery
  # userspace. Recovery therefore only needs modules that are absent from stock
 diff --git a/manifests/README_CN.md b/manifests/README_CN.md
-index 9b2c9c592488b5b0a89f26ce0d360ba162441f6e..df6f7660d73e56c2bd882e0b716c01b0fa70c2b4 100644
+index 9b2c9c5..df6f766 100644
 --- a/manifests/README_CN.md
 +++ b/manifests/README_CN.md
 @@ -18,17 +18,10 @@ device/xiaomi/rodin
@@ -2045,7 +2053,7 @@ index 9b2c9c592488b5b0a89f26ce0d360ba162441f6e..df6f7660d73e56c2bd882e0b716c01b0
  然后手动构建：
  
 diff --git a/manifests/device-blobs.sha256 b/manifests/device-blobs.sha256
-index 21642f276e9b0a8f85e9cc6cac2a3574dd81a1e2..a6ccd50db2c5bd92a1ce50aa1380114cf36c898c 100644
+index 21642f2..a6ccd50 100644
 --- a/manifests/device-blobs.sha256
 +++ b/manifests/device-blobs.sha256
 @@ -1,6 +1,14 @@
@@ -2090,7 +2098,7 @@ index 21642f276e9b0a8f85e9cc6cac2a3574dd81a1e2..a6ccd50db2c5bd92a1ce50aa1380114c
  d01d06cc43d3d6ef28f3bd4b2121967edb8bab0414e1cb7ffb5be9cb8525ee61  device/xiaomi/rodin/recovery/root/system/etc/vintf/manifest.xml
  3131029d0f2ee73c4dcb01429d0b8e46d8e1d3839216999dafa3eb6963441ddd  device/xiaomi/rodin/recovery/root/vendor/etc/ueventd.rc
 diff --git a/manifests/orangefox-fox_14.1-pinned.xml b/manifests/orangefox-fox_14.1-pinned.xml
-index f63df0530e3090209a327a2774144003f42e803a..ace1e3861ea405d8f416c554b59f8cde76b18919 100644
+index f63df05..ace1e38 100644
 --- a/manifests/orangefox-fox_14.1-pinned.xml
 +++ b/manifests/orangefox-fox_14.1-pinned.xml
 @@ -5,10 +5,11 @@
@@ -2116,7 +2124,7 @@ index f63df0530e3090209a327a2774144003f42e803a..ace1e3861ea405d8f416c554b59f8cde
    <superproject name="platform/superproject" revision="android-14.0.0_r67"/>
    
 diff --git a/patches/orangefox-recovery.patch b/patches/orangefox-recovery.patch
-index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..3e571240ac2824163ee0858594cc1db14a806994 100644
+index d770f4e..eff67dd 100644
 --- a/patches/orangefox-recovery.patch
 +++ b/patches/orangefox-recovery.patch
 @@ -1,3 +1,104 @@
@@ -2286,12 +2294,12 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..3e571240ac2824163ee0858594cc1db1
  diff --git a/gui/theme/portrait_hdpi/resources/images.xml b/gui/theme/portrait_hdpi/resources/images.xml
  index 1d8dec09..cf763f95 100644
  --- a/gui/theme/portrait_hdpi/resources/images.xml
-@@ -369,6 +525,226 @@ index 8e22b640..97a85fd9 100644
+@@ -369,6 +525,240 @@ index 8e22b640..97a85fd9 100644
   }
   
   void gr_clip(int x, int y, int w, int h)
 +diff --git a/minuitwrp/graphics_drm.cpp b/minuitwrp/graphics_drm.cpp
-+index 0cc80f5c..fe8d3f2d 100644
++index 0cc80f5c..490303f2 100644
 +--- a/minuitwrp/graphics_drm.cpp
 ++++ b/minuitwrp/graphics_drm.cpp
 +@@ -232,6 +232,9 @@ static drmModeConnector *main_monitor_connector;
@@ -2405,7 +2413,7 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..3e571240ac2824163ee0858594cc1db1
 +     if (ret < 0) {
 +       printf("Error populating plane_id = %d\n", plane_res[i].plane->plane_id);
 +       return ret;
-+@@ -586,14 +650,44 @@ static int setup_pipeline(drmModeAtomicReqPtr atomic_req) {
++@@ -586,14 +650,58 @@ static int setup_pipeline(drmModeAtomicReqPtr atomic_req) {
 + 
 + }
 + static int drm_enable_crtc(drmModeAtomicReqPtr atomic_req) {
@@ -2413,13 +2421,27 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..3e571240ac2824163ee0858594cc1db1
 ++  int buffer = current_buffer;
 ++#ifdef TW_DRM_BLANK_KEEP_PIPELINE
 ++  if (drm_pipeline_configured) {
-++    // ACTIVE=1 alone can return success while the MTK panel remains powered
-++    // down. Re-submit mode, connector, and plane state without first
-++    // detaching the retained pipeline so the driver's resume path runs.
-++    // current_buffer points to the next back buffer after drm_flip(); use the
-++    // buffer that was actually displayed before the blank request.
-++    buffer = 1 - current_buffer;
-++    printf("DRM blank restore retained pipeline: full setup\n");
+++    // ACTIVE=1 alone, or a modeset that keeps the same FB_ID, can return
+++    // success while the MTK panel remains powered down. Force a real plane
+++    // handoff as part of the resume commit. current_buffer is the back buffer
+++    // after drm_flip(); copy the last displayed contents into it so the
+++    // handoff cannot expose an uninitialized frame before gui_forceRender().
+++    const int displayed_buffer = 1 - current_buffer;
+++    if (drm_surfaces[current_buffer] && drm_surfaces[displayed_buffer]) {
+++      const size_t displayed_size =
+++          drm_surfaces[displayed_buffer]->base.height *
+++          drm_surfaces[displayed_buffer]->base.row_bytes;
+++      const size_t resume_size =
+++          drm_surfaces[current_buffer]->base.height *
+++          drm_surfaces[current_buffer]->base.row_bytes;
+++      if (displayed_size == resume_size && drm_surfaces[current_buffer]->base.data &&
+++          drm_surfaces[displayed_buffer]->base.data) {
+++        memcpy(drm_surfaces[current_buffer]->base.data,
+++               drm_surfaces[displayed_buffer]->base.data, displayed_size);
+++      }
+++    }
+++    printf("DRM blank restore retained pipeline: framebuffer handoff current=%d displayed=%d\n",
+++           current_buffer, displayed_buffer);
 ++  }
 ++#endif
 ++  return setup_pipeline(atomic_req, buffer);
@@ -2452,7 +2474,7 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..3e571240ac2824163ee0858594cc1db1
 + 
 +   drmModeAtomicReqPtr atomic_req = drmModeAtomicAlloc();
 +   if (!atomic_req) {
-+@@ -606,14 +700,27 @@ static void drm_blank(minui_backend* backend __unused, bool blank) {
++@@ -606,14 +714,27 @@ static void drm_blank(minui_backend* backend __unused, bool blank) {
 +   else
 +     ret = drm_enable_crtc(atomic_req);
 + 
@@ -2484,7 +2506,7 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..3e571240ac2824163ee0858594cc1db1
 +   }
 + 
 +   drmModeAtomicFree(atomic_req);
-+@@ -934,6 +1041,10 @@ static void update_plane_fb() {
++@@ -934,6 +1055,10 @@ static void update_plane_fb() {
 + static GRSurface* drm_init(minui_backend* backend __unused) {
 +   drmModeRes* res = nullptr;
 + 
@@ -2495,7 +2517,7 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..3e571240ac2824163ee0858594cc1db1
 +   spr_enabled = android::base::GetIntProperty("vendor.display.enable_spr", 0);
 +   /* Consider DRM devices in order. */
 +   for (int i = 0; i < DRM_MAX_MINOR; i++) {
-+@@ -1155,7 +1266,14 @@ static GRSurface* drm_flip(minui_backend* backend __unused) {
++@@ -1155,7 +1280,14 @@ static GRSurface* drm_flip(minui_backend* backend __unused) {
 + }
 + 
 + static void drm_exit(minui_backend* backend __unused) {
@@ -2513,7 +2535,7 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..3e571240ac2824163ee0858594cc1db1
  diff --git a/minuitwrp/include/minuitwrp/truetype.hpp b/minuitwrp/include/minuitwrp/truetype.hpp
  index 72b7620a..f096a230 100755
  --- a/minuitwrp/include/minuitwrp/truetype.hpp
-@@ -606,6 +982,473 @@ index 1f02b296..efb82ecd 100644
+@@ -606,6 +996,473 @@ index 1f02b296..efb82ecd 100644
   # whether to wipe /metadata after formatting data
   ifeq ($(OF_WIPE_METADATA_AFTER_DATAFORMAT),1)
      ifeq ($(TW_INCLUDE_FBE_METADATA_DECRYPT),true)
@@ -2989,7 +3011,7 @@ index d770f4e5c7ef8d013543b7f997ce8b1b09eca753..3e571240ac2824163ee0858594cc1db1
  --- a/twrp.cpp
 diff --git a/patches/orangefox-vendor-twrp.patch b/patches/orangefox-vendor-twrp.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..3304a5244f424f86a31044169242f0ecab267360
+index 0000000..3304a52
 --- /dev/null
 +++ b/patches/orangefox-vendor-twrp.patch
 @@ -0,0 +1,50 @@
@@ -3044,7 +3066,7 @@ index 0000000000000000000000000000000000000000..3304a5244f424f86a31044169242f0ec
 + SOONG_CONFIG_twrpGlobalVars_tw_oem_build := $(TW_OEM_BUILD)
 + SOONG_CONFIG_twrpGlobalVars_tw_x_offset := $(TW_X_OFFSET)
 diff --git a/prebuilt/README.md b/prebuilt/README.md
-index 4ec9694225aadee5ae502577ec40600f4e60bdd8..9a374a836a384642cb35cdca983647445adad385 100644
+index 4ec9694..9a374a8 100644
 --- a/prebuilt/README.md
 +++ b/prebuilt/README.md
 @@ -8,6 +8,8 @@ dump. Update all of them together when changing the firmware base.
@@ -3089,7 +3111,7 @@ index 4ec9694225aadee5ae502577ec40600f4e60bdd8..9a374a836a384642cb35cdca98364744
 +`global/vendor_ramdisk00`.
 diff --git a/prebuilt/global/modules/focaltech_touch_rodin.ko b/prebuilt/global/modules/focaltech_touch_rodin.ko
 new file mode 100644
-index 0000000000000000000000000000000000000000..402320f4f86ce9c317c9f47a9415323a3f49d857
+index 0000000..402320f
 --- /dev/null
 +++ b/prebuilt/global/modules/focaltech_touch_rodin.ko
 @@ -0,0 +1,3 @@
@@ -3098,7 +3120,7 @@ index 0000000000000000000000000000000000000000..402320f4f86ce9c317c9f47a9415323a
 +size 744224
 diff --git a/prebuilt/global/modules/goodix_core_rodin.ko b/prebuilt/global/modules/goodix_core_rodin.ko
 new file mode 100644
-index 0000000000000000000000000000000000000000..75c8378d2cb6b8a8514032b8d7ad0d8944526abe
+index 0000000..75c8378
 --- /dev/null
 +++ b/prebuilt/global/modules/goodix_core_rodin.ko
 @@ -0,0 +1,3 @@
@@ -3107,7 +3129,7 @@ index 0000000000000000000000000000000000000000..75c8378d2cb6b8a8514032b8d7ad0d89
 +size 529640
 diff --git a/prebuilt/global/modules/nxp_i2c.ko b/prebuilt/global/modules/nxp_i2c.ko
 new file mode 100644
-index 0000000000000000000000000000000000000000..eb687da717e96b14bca7bd3d7a491ba8302cba67
+index 0000000..eb687da
 --- /dev/null
 +++ b/prebuilt/global/modules/nxp_i2c.ko
 @@ -0,0 +1,3 @@
@@ -3116,7 +3138,7 @@ index 0000000000000000000000000000000000000000..eb687da717e96b14bca7bd3d7a491ba8
 +size 59896
 diff --git a/prebuilt/global/modules/p73.ko b/prebuilt/global/modules/p73.ko
 new file mode 100644
-index 0000000000000000000000000000000000000000..5a2d7809cbb13bf0db0ee301cb71550527a1165f
+index 0000000..5a2d780
 --- /dev/null
 +++ b/prebuilt/global/modules/p73.ko
 @@ -0,0 +1,3 @@
@@ -3125,7 +3147,7 @@ index 0000000000000000000000000000000000000000..5a2d7809cbb13bf0db0ee301cb715505
 +size 36528
 diff --git a/prebuilt/global/modules/scp.ko b/prebuilt/global/modules/scp.ko
 new file mode 100644
-index 0000000000000000000000000000000000000000..edbb5a17870e736ca2016b0e8bce769d63896e3a
+index 0000000..edbb5a1
 --- /dev/null
 +++ b/prebuilt/global/modules/scp.ko
 @@ -0,0 +1,3 @@
@@ -3134,7 +3156,7 @@ index 0000000000000000000000000000000000000000..edbb5a17870e736ca2016b0e8bce769d
 +size 474640
 diff --git a/prebuilt/global/modules/si_haptic.ko b/prebuilt/global/modules/si_haptic.ko
 new file mode 100644
-index 0000000000000000000000000000000000000000..06cab7dce5d232b12a47ca6abab12914caeca210
+index 0000000..06cab7d
 --- /dev/null
 +++ b/prebuilt/global/modules/si_haptic.ko
 @@ -0,0 +1,3 @@
@@ -3143,7 +3165,7 @@ index 0000000000000000000000000000000000000000..06cab7dce5d232b12a47ca6abab12914
 +size 222176
 diff --git a/prebuilt/global/modules/xiaomi_touch_rodin.ko b/prebuilt/global/modules/xiaomi_touch_rodin.ko
 new file mode 100644
-index 0000000000000000000000000000000000000000..bca65023586ff3c85ac1874cfaba5d469c23052f
+index 0000000..bca6502
 --- /dev/null
 +++ b/prebuilt/global/modules/xiaomi_touch_rodin.ko
 @@ -0,0 +1,3 @@
@@ -3152,7 +3174,7 @@ index 0000000000000000000000000000000000000000..bca65023586ff3c85ac1874cfaba5d46
 +size 210064
 diff --git a/recovery/root/init.recovery.bootctl.rc b/recovery/root/init.recovery.bootctl.rc
 new file mode 100644
-index 0000000000000000000000000000000000000000..0d7e548128be03bd9f1470cc5bf697c2e721f897
+index 0000000..0d7e548
 --- /dev/null
 +++ b/recovery/root/init.recovery.bootctl.rc
 @@ -0,0 +1,12 @@
@@ -3169,7 +3191,7 @@ index 0000000000000000000000000000000000000000..0d7e548128be03bd9f1470cc5bf697c2
 +    seclabel u:r:hal_bootctl_default:s0
 +    interface aidl android.hardware.boot.IBootControl/default
 diff --git a/recovery/root/init.recovery.keymint.rc b/recovery/root/init.recovery.keymint.rc
-index 7570d8374f646f36f960331142ed2a49f4faae75..3b76df348f0c43daf6d5cb2adb36f71ba05ee474 100644
+index 7570d83..3b76df3 100644
 --- a/recovery/root/init.recovery.keymint.rc
 +++ b/recovery/root/init.recovery.keymint.rc
 @@ -37,6 +37,8 @@ service rodin.omapi_bridge /system/bin/rodin_omapi_bridge
@@ -3202,7 +3224,7 @@ index 7570d8374f646f36f960331142ed2a49f4faae75..3b76df348f0c43daf6d5cb2adb36f71b
 -on property:vendor.omapi_bridge.ready=1
 -    start vendor.weaver_nxp
 diff --git a/recovery/root/init.recovery.mt6899.rc b/recovery/root/init.recovery.mt6899.rc
-index ad0c794e44cfe543a775e81b62d72e0bf27d3889..4f02c9fca8b56acd3bc5af6d0ca215bd7fa0db09 100644
+index ad0c794..4f02c9f 100644
 --- a/recovery/root/init.recovery.mt6899.rc
 +++ b/recovery/root/init.recovery.mt6899.rc
 @@ -1,3 +1,4 @@
@@ -3211,7 +3233,7 @@ index ad0c794e44cfe543a775e81b62d72e0bf27d3889..4f02c9fca8b56acd3bc5af6d0ca215bd
  
  service rodin-touch-loader /system/bin/load-touch-modules.sh
 diff --git a/recovery/root/system/etc/recovery.fstab b/recovery/root/system/etc/recovery.fstab
-index a97df1a64eeec75fbae05488b6035fc3814e94f1..1bd60cdaa5cf5e0a717ebcbf4b1d098e688052b3 100644
+index a97df1a..1bd60cd 100644
 --- a/recovery/root/system/etc/recovery.fstab
 +++ b/recovery/root/system/etc/recovery.fstab
 @@ -19,29 +19,6 @@ product /product erofs ro wait,slotselect,avb,logical,first_stage_mount
@@ -3245,7 +3267,7 @@ index a97df1a64eeec75fbae05488b6035fc3814e94f1..1bd60cdaa5cf5e0a717ebcbf4b1d098e
  
  odm /odm erofs ro wait,slotselect,avb,logical,first_stage_mount
 diff --git a/recovery/root/system/etc/twrp.flags b/recovery/root/system/etc/twrp.flags
-index e3dacadbcff969f1d428720f92db1ece977ab39c..d2ab71cacd9f941d1889ea1ae1bf0c2be1d48631 100644
+index e3dacad..d2ab71c 100644
 --- a/recovery/root/system/etc/twrp.flags
 +++ b/recovery/root/system/etc/twrp.flags
 @@ -18,7 +18,7 @@
@@ -3272,7 +3294,7 @@ index e3dacadbcff969f1d428720f92db1ece977ab39c..d2ab71cacd9f941d1889ea1ae1bf0c2b
  # Flashable logical partitions
  /system_image	         emmc		/dev/block/mapper/system								  flags=display="System Image";slotselect;backup;flashimg
 diff --git a/tools/apply-orangefox-patches.sh b/tools/apply-orangefox-patches.sh
-index a663b37512ac6ba7f50f627d2d5772ff12bee58f..cd61a096248752f757362e49c54c7baee199755b 100755
+index a663b37..cd61a09 100755
 --- a/tools/apply-orangefox-patches.sh
 +++ b/tools/apply-orangefox-patches.sh
 @@ -5,8 +5,10 @@ DEVICE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -3295,7 +3317,7 @@ index a663b37512ac6ba7f50f627d2d5772ff12bee58f..cd61a096248752f757362e49c54c7bae
  
  for language in es_ES hu_HU zh_CN zh_TW; do
 diff --git a/tools/build-system-compatible-vendor-boot.sh b/tools/build-system-compatible-vendor-boot.sh
-index 890d38d4e0d33e53a52f041c98eb8bb182930787..75a8fc6c16dc8c9536c10ae5256411d9f1718eb4 100755
+index 890d38d..75a8fc6 100755
 --- a/tools/build-system-compatible-vendor-boot.sh
 +++ b/tools/build-system-compatible-vendor-boot.sh
 @@ -4,22 +4,54 @@ set -euo pipefail
@@ -3769,7 +3791,7 @@ index 890d38d4e0d33e53a52f041c98eb8bb182930787..75a8fc6c16dc8c9536c10ae5256411d9
  cat "${OUTPUT_IMAGE}.sha256"
 diff --git a/tools/import-global-firmware-inputs.sh b/tools/import-global-firmware-inputs.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..b5296ac8bb76ad78ddd3adeff57b6cb9188af204
+index 0000000..b5296ac
 --- /dev/null
 +++ b/tools/import-global-firmware-inputs.sh
 @@ -0,0 +1,74 @@
@@ -3848,7 +3870,7 @@ index 0000000000000000000000000000000000000000..b5296ac8bb76ad78ddd3adeff57b6cb9
 +echo "Imported Global OS3.0.301.0.WOJMIXM platform ramdisk: $DESTINATION"
 +sha256sum "$DESTINATION"
 diff --git a/tools/patch-recovery-touch-modules.sh b/tools/patch-recovery-touch-modules.sh
-index 2ee711ac08bef6b0d209503a35784fa22511bde4..645b7860bc9635ab39f74ad43034a101fa437078 100755
+index 2ee711a..645b786 100755
 --- a/tools/patch-recovery-touch-modules.sh
 +++ b/tools/patch-recovery-touch-modules.sh
 @@ -3,6 +3,7 @@
@@ -3980,7 +4002,7 @@ index 2ee711ac08bef6b0d209503a35784fa22511bde4..645b7860bc9635ab39f74ad43034a101
  patch_return_zero "$GOODIX" $((0x27014)) "goodix:scp_tp_sendparam"
 diff --git a/tools/patch-vendor-boot-dtb.py b/tools/patch-vendor-boot-dtb.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..92283783e93a1668eba0c12623393bb09e84c60a
+index 0000000..9228378
 --- /dev/null
 +++ b/tools/patch-vendor-boot-dtb.py
 @@ -0,0 +1,107 @@
@@ -4092,7 +4114,7 @@ index 0000000000000000000000000000000000000000..92283783e93a1668eba0c12623393bb0
 +if __name__ == "__main__":
 +    raise SystemExit(main())
 diff --git a/tools/verify-build-inputs.sh b/tools/verify-build-inputs.sh
-index 4550714d793a217d095da9a6cb69dc82de2a270a..968e6348e65d29d3d3cf4e4f74324d60da86f9a8 100755
+index 4550714..8e886a4 100755
 --- a/tools/verify-build-inputs.sh
 +++ b/tools/verify-build-inputs.sh
 @@ -10,7 +10,12 @@ fail() {
@@ -4122,7 +4144,7 @@ index 4550714d793a217d095da9a6cb69dc82de2a270a..968e6348e65d29d3d3cf4e4f74324d60
 -check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" d36b4ef38558113296fe4353d8374f5b8f700d829531f2b7139b74c7f7fdcfd9
 -check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 24054779376a52e037454daba105d5153202d92104ddf535f65fd58c06e3abe5
 +check_sha256 "${DEVICE_DIR}/patches/orangefox-vendor-twrp.patch" d845e7cc38d612fa838db94da6336820b48d2e4251e109ee7b4ef2f361d22158
-+check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" b10e2e38df4d30058488832d6d4c50a574246bcef5b05944999285146636eb67
++check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 59141a5f5f91f612caeb136c6f8626f0313dd593265d6ab49d987adc0c6390bd
 +check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 9a0f318a8df7a99a42e8c8ebac0891626cfd5ba8eba7936e3a7ec5b22931945a
  
  if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
@@ -4372,8 +4394,8 @@ index 4550714d793a217d095da9a6cb69dc82de2a270a..968e6348e65d29d3d3cf4e4f74324d60
 +    'DRM blank retained pipeline: ACTIVE=' \
 +    "Global retained atomic DRM blank path is missing"
 +check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
-+    'DRM blank restore retained pipeline: full setup' \
-+    "Global retained atomic DRM wake restore is missing"
++    'DRM blank restore retained pipeline: framebuffer handoff' \
++    "Global retained atomic DRM framebuffer-handoff wake restore is missing"
 +check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
 +    'DRM shutdown: pipeline torn down before resource release' \
 +    "Global DRM shutdown teardown is missing"

@@ -80,7 +80,7 @@ check_file "${DEVICE_DIR}/manifests/device-blobs.sha256"
 check_file "${DEVICE_DIR}/manifests/orangefox-fox_14.1-pinned.xml"
 check_sha256 "${DEVICE_DIR}/patches/orangefox-build-make.patch" 5f2d3f43a4d78eee6d560a4a169df30fc95de6fa2ed294e3210e684a641a8329
 check_sha256 "${DEVICE_DIR}/patches/orangefox-vendor-twrp.patch" d845e7cc38d612fa838db94da6336820b48d2e4251e109ee7b4ef2f361d22158
-check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" b10e2e38df4d30058488832d6d4c50a574246bcef5b05944999285146636eb67
+check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 59141a5f5f91f612caeb136c6f8626f0313dd593265d6ab49d987adc0c6390bd
 check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 9a0f318a8df7a99a42e8c8ebac0891626cfd5ba8eba7936e3a7ec5b22931945a
 
 if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
@@ -414,8 +414,8 @@ check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
     'DRM blank retained pipeline: ACTIVE=' \
     "Global retained atomic DRM blank path is missing"
 check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
-    'DRM blank restore retained pipeline: full setup' \
-    "Global retained atomic DRM wake restore is missing"
+    'DRM blank restore retained pipeline: framebuffer handoff' \
+    "Global retained atomic DRM framebuffer-handoff wake restore is missing"
 check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
     'DRM shutdown: pipeline torn down before resource release' \
     "Global DRM shutdown teardown is missing"

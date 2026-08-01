@@ -526,7 +526,7 @@ index 8e22b640..97a85fd9 100644
  
  void gr_clip(int x, int y, int w, int h)
 diff --git a/minuitwrp/graphics_drm.cpp b/minuitwrp/graphics_drm.cpp
-index 0cc80f5c..fe8d3f2d 100644
+index 0cc80f5c..490303f2 100644
 --- a/minuitwrp/graphics_drm.cpp
 +++ b/minuitwrp/graphics_drm.cpp
 @@ -232,6 +232,9 @@ static drmModeConnector *main_monitor_connector;
@@ -640,7 +640,7 @@ index 0cc80f5c..fe8d3f2d 100644
      if (ret < 0) {
        printf("Error populating plane_id = %d\n", plane_res[i].plane->plane_id);
        return ret;
-@@ -586,14 +650,44 @@ static int setup_pipeline(drmModeAtomicReqPtr atomic_req) {
+@@ -586,14 +650,58 @@ static int setup_pipeline(drmModeAtomicReqPtr atomic_req) {
  
  }
  static int drm_enable_crtc(drmModeAtomicReqPtr atomic_req) {
@@ -648,13 +648,27 @@ index 0cc80f5c..fe8d3f2d 100644
 +  int buffer = current_buffer;
 +#ifdef TW_DRM_BLANK_KEEP_PIPELINE
 +  if (drm_pipeline_configured) {
-+    // ACTIVE=1 alone can return success while the MTK panel remains powered
-+    // down. Re-submit mode, connector, and plane state without first
-+    // detaching the retained pipeline so the driver's resume path runs.
-+    // current_buffer points to the next back buffer after drm_flip(); use the
-+    // buffer that was actually displayed before the blank request.
-+    buffer = 1 - current_buffer;
-+    printf("DRM blank restore retained pipeline: full setup\n");
++    // ACTIVE=1 alone, or a modeset that keeps the same FB_ID, can return
++    // success while the MTK panel remains powered down. Force a real plane
++    // handoff as part of the resume commit. current_buffer is the back buffer
++    // after drm_flip(); copy the last displayed contents into it so the
++    // handoff cannot expose an uninitialized frame before gui_forceRender().
++    const int displayed_buffer = 1 - current_buffer;
++    if (drm_surfaces[current_buffer] && drm_surfaces[displayed_buffer]) {
++      const size_t displayed_size =
++          drm_surfaces[displayed_buffer]->base.height *
++          drm_surfaces[displayed_buffer]->base.row_bytes;
++      const size_t resume_size =
++          drm_surfaces[current_buffer]->base.height *
++          drm_surfaces[current_buffer]->base.row_bytes;
++      if (displayed_size == resume_size && drm_surfaces[current_buffer]->base.data &&
++          drm_surfaces[displayed_buffer]->base.data) {
++        memcpy(drm_surfaces[current_buffer]->base.data,
++               drm_surfaces[displayed_buffer]->base.data, displayed_size);
++      }
++    }
++    printf("DRM blank restore retained pipeline: framebuffer handoff current=%d displayed=%d\n",
++           current_buffer, displayed_buffer);
 +  }
 +#endif
 +  return setup_pipeline(atomic_req, buffer);
@@ -687,7 +701,7 @@ index 0cc80f5c..fe8d3f2d 100644
  
    drmModeAtomicReqPtr atomic_req = drmModeAtomicAlloc();
    if (!atomic_req) {
-@@ -606,14 +700,27 @@ static void drm_blank(minui_backend* backend __unused, bool blank) {
+@@ -606,14 +714,27 @@ static void drm_blank(minui_backend* backend __unused, bool blank) {
    else
      ret = drm_enable_crtc(atomic_req);
  
@@ -719,7 +733,7 @@ index 0cc80f5c..fe8d3f2d 100644
    }
  
    drmModeAtomicFree(atomic_req);
-@@ -934,6 +1041,10 @@ static void update_plane_fb() {
+@@ -934,6 +1055,10 @@ static void update_plane_fb() {
  static GRSurface* drm_init(minui_backend* backend __unused) {
    drmModeRes* res = nullptr;
  
@@ -730,7 +744,7 @@ index 0cc80f5c..fe8d3f2d 100644
    spr_enabled = android::base::GetIntProperty("vendor.display.enable_spr", 0);
    /* Consider DRM devices in order. */
    for (int i = 0; i < DRM_MAX_MINOR; i++) {
-@@ -1155,7 +1266,14 @@ static GRSurface* drm_flip(minui_backend* backend __unused) {
+@@ -1155,7 +1280,14 @@ static GRSurface* drm_flip(minui_backend* backend __unused) {
  }
  
  static void drm_exit(minui_backend* backend __unused) {
