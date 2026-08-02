@@ -32,7 +32,7 @@ You can gou the prebuilt image from release
 
 **Not works:**
 
-- **❓Global device cant unlock screen?(still need test)**
+- **❓Global device cant unlock screen in some custom device(still need test)**
 
 ***
 
