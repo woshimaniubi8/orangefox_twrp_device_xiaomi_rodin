@@ -175,6 +175,9 @@ check_contains "${DEVICE_DIR}/BoardConfig.mk" \
 check_contains "${DEVICE_DIR}/BoardConfig.mk" \
     'TW_DRM_BLANK_KEEP_PIPELINE := true' \
     "Global retained DRM pipeline setting is missing"
+check_contains "${DEVICE_DIR}/BoardConfig.mk" \
+    'TW_EXCLUDE_APEX := true' \
+    "rodin must exclude the optional TWRP APEX loop loader"
 if grep -qF -- 'TW_NO_SCREEN_BLANK' "${DEVICE_DIR}/BoardConfig.mk"; then
     fail "rodin must retain the standard DRM screen-blank state machine"
 fi
@@ -419,6 +422,9 @@ check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
 check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
     'DRM shutdown: pipeline torn down before resource release' \
     "Global DRM shutdown teardown is missing"
+check_contains "${TOP_DIR}/bootable/recovery/Android.mk" \
+    'LOCAL_CFLAGS += -DTW_EXCLUDE_APEX' \
+    "OrangeFox source does not support excluding the APEX loop loader"
 check_contains "${TOP_DIR}/bootable/recovery/partitions.hpp" \
     'Get_Logical_Partition_Name' \
     "logical partition name accessor is missing"

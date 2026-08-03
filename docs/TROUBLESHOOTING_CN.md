@@ -269,7 +269,33 @@ unable to update logical partition: /mnt/vendor/mi_ext
 未插入 SD 卡或 USB 存储设备时，`/auto*`、`/external_sd`、`/usb_otg` 的挂载失败是
 预期状态，不是分区错误。
 
-## 14. 最小日志包
+## 14. `Unable to load apex images` / `failed to mount loop`
+
+这不是 fstab 所列的 `system`、`vendor` 或动态分区挂载失败。它来自 TWRP 的可选
+APEX loop loader，扫描 `/system_root/system/apex` 并把 APEX payload 临时挂载到 `/apex`。
+rodin 的 Recovery FBE 使用 ramdisk 内的 KeyMint/Weaver 和 vendor 库；已验证的解密流程不依赖
+该 loader。
+
+本设备树设置 `TW_EXCLUDE_APEX := true`，构建时会排除 loader，并同时跳过 Format Data 与
+`Unmap_Super_Devices()` 中本来对应的 APEX 卸载调用。系统中的 APEX 文件和正常 Android 启动不受
+影响。新镜像启动后应出现：
+
+```text
+Apex is disabled in this build
+```
+
+且不应再出现以下错误：
+
+```text
+failed to mount loop
+Unable to create loop devices to mount apex files
+Unable to load apex images from /system_root/system/apex
+```
+
+不要把旧镜像的 APEX 错误直接等同于 `Unable to unmap dynamic partitions`。后者应按第 12 节检查
+slot 分区与 mapper alias；本次改动只消除可选 APEX loader 残留 loop 设备的风险。
+
+## 15. 最小日志包
 
 ```bash
 LOGDIR="logs/$(date +%F-%H%M%S)"

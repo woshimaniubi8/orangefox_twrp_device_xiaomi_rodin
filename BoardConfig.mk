@@ -144,6 +144,10 @@ TW_INCLUDE_LPDUMP := true
 TW_INCLUDE_REPACKTOOLS := true
 TW_INCLUDE_RESETPROP := true
 TW_INCLUDE_EROFS := true
+# Recovery uses its own static userspace plus the stock KeyMint/Weaver stack;
+# it does not need Android's system APEX packages.  Excluding the generic
+# TWRP loop loader avoids stale loop devices on this Android 16 layout.
+TW_EXCLUDE_APEX := true
 TW_DEFAULT_LANGUAGE := zh_CN
 # The first decrypt page opens before encrypted Fox settings can be read.
 OF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT := 1

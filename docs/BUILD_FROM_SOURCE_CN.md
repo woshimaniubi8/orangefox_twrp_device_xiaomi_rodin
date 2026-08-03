@@ -176,6 +176,9 @@ recovery patch 包含：
 - stock DTB 的 xHCI 节点依赖 Android USB audio offload；Recovery 不加载其音频/基带依赖。
   repacker 会用 `fdtput` 在临时 DTB 删除唯一的 `mediatek,usb-offload` 属性，并保留、更新
   MTK wrapper 长度字段。构建主机必须提供 `device-tree-compiler`（`fdtget`、`fdtput`）。
+- `TW_EXCLUDE_APEX := true`：rodin Recovery 的 FBE 使用 ramdisk 内的 KeyMint/Weaver 与
+  vendor 库，不依赖 `/system_root/system/apex`。因此不编译 TWRP 的通用 APEX loop loader，
+  避免 Android 16 APEX 在 Recovery 中留下 loop 设备或干扰后续动态分区操作。
 - Recovery 二阶段 `libprocessgroup_setup.so` 的构建来源修复，并在最终重打包前验证其
   ELF magic；若该检查失败，停止构建，不能刷写输出目录中遗留的旧镜像。
 - `mi_ext` 使用 v2 fstab 第一列的原始逻辑分区名完成 mapper 创建和拆除；Recovery fstab

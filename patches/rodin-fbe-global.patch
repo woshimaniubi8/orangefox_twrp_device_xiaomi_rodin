@@ -940,57 +940,6 @@ index 963844f..8aaa90d 100644
          "libbase",
          "libbinder_ndk",
          "liblog",
-diff --git a/BoardConfig.mk b/BoardConfig.mk
-index 70dfc37..d231a02 100644
---- a/BoardConfig.mk
-+++ b/BoardConfig.mk
-@@ -77,9 +77,12 @@ BOARD_USES_METADATA_PARTITION := true
- 
- # Prune the full ncurses database after OrangeFox finishes preparing the
- # ramdisk, while retaining common terminal definitions.
--BOARD_RECOVERY_IMAGE_PREPARE = bash $(DEVICE_PATH)/fox_callback.sh $(TARGET_RECOVERY_ROOT_OUT) --first-call
-+BOARD_RECOVERY_IMAGE_PREPARE = RODIN_FIRMWARE_VARIANT=$(RODIN_FIRMWARE_VARIANT) bash $(DEVICE_PATH)/fox_callback.sh $(TARGET_RECOVERY_ROOT_OUT) --first-call
- 
- AB_OTA_UPDATER := true
-+# The retained stock MediaTek service is AIDL. This also makes OrangeFox's
-+# slot selector use the same service as the updater's bootctl client.
-+OF_USE_AIDL_BOOT_CONTROL := 1
- AB_OTA_PARTITIONS += \
-     boot \
-     init_boot \
-@@ -127,6 +130,12 @@ TARGET_SCREEN_WIDTH := 1220
- TARGET_SCREEN_HEIGHT := 2712
- TW_MAX_BRIGHTNESS := 2047
- TW_DEFAULT_BRIGHTNESS := 1000
-+# Global's stock 6.6.89 MTK DRM can lose the panel after Recovery completely
-+# tears down and rebuilds the atomic pipeline. Keep its original blanktimer
-+# state machine, but retain the configured pipeline across screen blanking.
-+ifeq ($(RODIN_FIRMWARE_VARIANT),global)
-+TW_DRM_BLANK_KEEP_PIPELINE := true
-+endif
- # Read capacity directly from the working kernel power-supply node.
- TW_USE_LEGACY_BATTERY_SERVICES := true
- TW_INCLUDE_FASTBOOTD := true
-@@ -140,6 +149,9 @@ TW_DEFAULT_LANGUAGE := zh_CN
- OF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT := 1
- TW_HAS_MTP := true
- TW_MTP_DEVICE := /dev/mtp_usb
-+# This enables the legacy "USB Storage" gadget action. It is deliberately
-+# left disabled: OTG is a host-mode, removable-storage workflow and must not
-+# expose /data to a connected computer as a block device.
- TW_NO_USB_STORAGE := true
- TW_EXCLUDE_DEFAULT_USB_INIT := true
- TW_INPUT_BLACKLIST := "hbtp_vm"
-@@ -155,6 +167,9 @@ BOARD_HAS_LARGE_FILESYSTEM := true
- TW_INCLUDE_CRYPTO := true
- TW_INCLUDE_FBE := true
- TW_INCLUDE_FBE_METADATA_DECRYPT := true
-+# Format Data must release the FBE dm-default-key mapping before mkfs writes
-+# the physical userdata block device.
-+OF_USE_DMCTL := 1
- TW_USE_FSCRYPT_POLICY := 2
- TW_RECOVERY_ADDITIONAL_RELINK_LIBRARY_FILES = \
-     $(TARGET_OUT_SHARED_LIBRARIES)/libtrusty.so \
 diff --git a/README.md b/README.md
 index fc739b3..b969338 100644
 --- a/README.md
@@ -1373,240 +1322,6 @@ index 2f227ef..4b54819 100644
  
  不能直接加载原始 `scp.ko`。实机 pstore 已确认它会在缺少 SCP reserved-memory 的 Recovery 环境中于 `scp_region_info_init()` 触发 kernel panic。
  
-diff --git a/docs/BUILD_FROM_SOURCE_CN.md b/docs/BUILD_FROM_SOURCE_CN.md
-index d28fd7e..b9d32ed 100644
---- a/docs/BUILD_FROM_SOURCE_CN.md
-+++ b/docs/BUILD_FROM_SOURCE_CN.md
-@@ -35,6 +35,7 @@ sha256sum rodin-device-tree-*.tar.zst
- | --- | --- |
- | OrangeFox 分支 | `fox_14.1` |
- | `bootable/recovery` 基线 | `fd98f33a722bd0bd52034f170bb91e2862654d6b` |
-+| `bootable/recovery` 来源 | OrangeFox `fox_14.1`（manifest 使用 50 层浅克隆覆盖全局 1 层设置） |
- | `build/make` 基线 | `506df226dd003a364916b6b3ee1eb3bf9064f97f` |
- | `vendor/recovery` 基线 | `0d7959e6538db5ddfff892cf7dfe207c68b0b753` |
- | 设备 | Redmi Turbo 4 / `rodin` / `24129RT7CC` |
-@@ -70,6 +71,48 @@ sudo apt install -y \
- 
- 不要在空间不足的根分区构建。Soong 生成构建图时会出现短时高内存峰值。
- 
-+### GitHub Actions 标准托管 Runner
-+
-+设备树中的 `.github/workflows/build.yml` 使用 GitHub 托管的
-+`ubuntu-24.04`，不需要自行注册 `self-hosted` Runner。流程会在同步源码前
-+删除该临时 VM 上不参与构建的 Android SDK、语言工具缓存、浏览器和 Docker
-+层，然后安装构建依赖、从 Git LFS 拉取 `prebuilt/` 输入，并补足至少 12 GiB
-+swap。CI 只补足缺少的 swap 并为 header 预留余量，不会丢弃托管镜像已有的
-+swap。
-+
-+rodin 在删除 `.repo` 后，源码与完整 `out/` 的构建峰值仍约为 83 GiB。因此
-+工作流只会在 swap 建立后仍有至少 98 GiB 可用空间、且物理内存至少 14 GiB
-+时继续同步和构建。看到 `df` 中约 63 GiB 空闲，只说明 Job 已经被 GitHub
-+托管 VM 调度，尚不足以证明完整构建可完成。
-+
-+工作流只缓存每个固件 profile 最多 3 GiB 的 `ccache`，不缓存完整源码或 `out/`；后两者
-+体积过大，传输与解压反而会拖慢 GitHub 托管 Runner。首次构建仍是冷构建，后续构建会复用
-+C/C++ 编译结果，并在日志中输出命中率。同步完成并删除 `.repo` 后，工作流会为该缓存保留
-+空间，要求至少 38 GiB 可用空间才启动 Soong。
-+缓存的恢复与保存均为 best-effort；缓存服务暂时失败时会退回冷构建，不会阻止已验证镜像上传或发布。
-+
-+push 以及手动选择 `firmware_variant=all` 的工作流会构建 CN 和 Global 两个矩阵项；同一分支的
-+新工作流会通过并发组取消该分支仍在运行或排队的旧工作流。手动触发时可选择 `cn` 或 `global`
-+只构建一个 profile，以缩短调试周期；这种单 profile 运行只上传 artifact，不创建不完整的
-+prerelease。
-+
-+只修改 `README.md`、`docs/` 或 issue template 的 push 会被 `paths-ignore` 跳过，不消耗完整构建。
-+
-+只有 `main` 上成功的构建会创建 prerelease。其他 ref 的手动构建仍会上传
-+artifact，但不会向仓库发布 release。
-+
-+GitHub 托管镜像的实际磁盘布局会变化，因此工作流以运行时的 `df` 与
-+`/proc/meminfo` 为准，而不假定固定容量。GitHub 托管 Job 最长运行 6 小时，
-+故工作流默认只使用两个并行编译任务。若清理后的实际空间仍未达到 98 GiB，
-+应配置 GitHub-hosted larger runner，而不是降低容量阈值或改回 recovery-only
-+打包路径。
-+
-+`bootable/recovery` 的本地路径与上游项目名不同：OrangeFox GitLab 项目名必须是
-+`bootable/Recovery`，而不是 Android mirror 所用的 `android_bootable_recovery`。
-+Repo 以 `remote.fetch + project.name` 构造 clone URL，因此前者会得到
-+`https://gitlab.com/OrangeFox/bootable/Recovery.git`。CI 仍以固定 SHA 同步该项目，
-+使用 HTTP/1.1，并对瞬时 fetch 错误重试三次。
-+
- ## 4. 获取 OrangeFox 14.1
- 
- ```bash
-@@ -87,7 +130,7 @@ test -f build/envsetup.sh
- git -C bootable/recovery rev-parse HEAD
- ```
- 
--如果 `bootable/recovery` 已偏离上述基线，设备 patch 可能需要手动 rebase，不能强行 `git apply`。
-+上游 `14.1` 分支会继续前进，以上官方同步命令不保证得到本设备已验证的源码快照。正式构建必须让 `device/xiaomi/rodin/manifests/orangefox-fox_14.1-pinned.xml` 中的 662 个 revision 全部通过预检；CI 会以该文件初始化 `repo`。若手动同步后的 `bootable/recovery` 已偏离上述基线，先按该 manifest 恢复源码，不要设置 `RODIN_ALLOW_UNPINNED_SOURCE=1` 绕过检查或强行 `git apply`。
- 
- ## 5. 放置设备树并应用 Fox 源码 patch
- 
-@@ -97,10 +140,11 @@ git -C bootable/recovery rev-parse HEAD
- device/xiaomi/rodin
- ```
- 
--设备树包含两份源码 patch：
-+设备树包含两份 OrangeFox 共享源码 patch，以及一份可移植的设备树修复 patch：
- 
- - `orangefox-build-make.patch`：OrangeFox 14.1 标准构建桥接，负责调用 `vendor/recovery/OrangeFox_A14.sh`。官方 vendor 克隆流程通常已经应用，脚本会自动跳过。
- - `orangefox-recovery.patch`：本设备实测所需的 recovery 共享源码修复。
-+- `rodin-fbe-global.patch`：针对本设备树初始快照的 FBE/OMAPI/Weaver 修复及 CN/Global 构建 profile。它不包含 Global 固件二进制输入，应用方法和变更说明见 [DEVICE_TREE_PATCHES_CN.md](DEVICE_TREE_PATCHES_CN.md)。
- 
- recovery patch 包含：
- 
-@@ -109,6 +153,36 @@ recovery patch 包含：
- - rodin 解密后禁止完整 GUI package 重建，避免 recovery `SIGSEGV`。
- - 解密页面显示前加载默认简体中文。
- - MiSans 主题选择项和 SIH6887 震动节点支持。
-+- USB OTG host 状态机：断开电脑后，在“挂载”页先点 USB 浮动按钮，再于 20 秒内插入
-+  U 盘。它会临时将 Type-C 首选电源角色设为 source、解绑 ADB/MTP、使用 `vbus_switch` 打开
-+  `usb-otg-vbus` regulator 并切换 host；失败、
-+  按 X 停止或拔出后恢复 device/MTP 和 sink 偏好。内部 UFS 的 `sdX` 节点始终不会被识别为
-+  OTG 介质，且 host 期间不会读取会阻塞的 role-switch `role` 属性。
-+- Global OS3.0.301.0.WOJMIXM 必须设置 `RODIN_FIRMWARE_VARIANT=global`。它使用自己的
-+  6.6.89 platform ramdisk；最终打包还会替换 7 个 ABI 相关的触摸、haptic 和 eSE 模块，
-+  并在 Make 复制 `recovery/root` 前生成已修补的模块源目录，避免产品复制顺序覆盖 Global
-+  模块。该目录应用 Global 固定偏移的 SCP/Goodix/FocalTech Recovery patch；该 patch 使用
-+  Android 构建环境允许的 `python3`，不依赖被 Soong PATH 限制的 `perl`。repacker 会验证其中的
-+  Type-C/OTG 模块及 `vbus_switch`，并将最终 Recovery 的 7 个模块逐字节比对为已修补的
-+  Global 输入，防止 CN recovery fragment 被误用；DTB 与 CN 基线完全相同，仍会移除 xHCI 的
-+  `mediatek,usb-offload` 属性。Global 保留原始的 `blanktimer -> gr_fb_blank()` 锁屏状态机，
-+  但首次完整配置 atomic DRM pipeline 后，后续锁屏只切换 CRTC `ACTIVE=0` 并保留 connector、
-+  mode 和 plane 绑定；唤醒时重新提交完整 mode/connector/plane 状态，并在该 atomic commit 中
-+  切换到备用 framebuffer。切换前会复制上一帧，随后原有 `gui_forceRender()` 立即绘制；这让
-+  MTK driver 观察到真实 plane 更新并触发面板恢复，同时避免 stock 6.6.89 在完整
-+  teardown/rebuild 后无法恢复面板。
-+  仅 Recovery 退出时才完整拆除这些绑定，再释放 mode blob 和 framebuffer；
-+  `TW_NO_SCREEN_BLANK` 仍不得定义。
-+- stock DTB 的 xHCI 节点依赖 Android USB audio offload；Recovery 不加载其音频/基带依赖。
-+  repacker 会用 `fdtput` 在临时 DTB 删除唯一的 `mediatek,usb-offload` 属性，并保留、更新
-+  MTK wrapper 长度字段。构建主机必须提供 `device-tree-compiler`（`fdtget`、`fdtput`）。
-+- Recovery 二阶段 `libprocessgroup_setup.so` 的构建来源修复，并在最终重打包前验证其
-+  ELF magic；若该检查失败，停止构建，不能刷写输出目录中遗留的旧镜像。
-+- `mi_ext` 使用 v2 fstab 第一列的原始逻辑分区名完成 mapper 创建和拆除；Recovery fstab
-+  不解析 Android init 的 `ro,bind` / `overlay` 行。KeyMint 的只读 `persist` 挂载会 bind
-+  到 `/persist`，OrangeFox 只读取、不写入该安全存储。
-+- Virtual A/B `Format Data` 时保留 `vendor -> vendor_a` 等无槽位 mapper 别名，避免在 pending-merge 检查前错误删除别名而中止格式化；`*_a`/`*_b` 与 `-cow` 的精确清理不变。
-+- Android 16 FBE 已解密后，先用 Recovery 内置 `dmctl` 释放 `/dev/block/mapper/userdata`，确认映射消失后才格式化物理 userdata 分区；删除失败会中止操作。
- 
- 在干净源码中执行：
- 
-@@ -116,12 +190,21 @@ recovery patch 包含：
- device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
- ```
- 
--脚本可重复运行。它会检查并应用两份 patch，从 OrangeFox 自带 `extra-languages` 安装 `es_ES`、`hu_HU`、`zh_CN` 和 `zh_TW`，保留、验证内置的 `ja_JP`，然后自动运行完整构建输入预检。预检默认要求 pinned manifest 中全部 660 个 repo 项目以及独立的 `vendor/recovery` 与已验证 revision 一致，并检查 FocalTech 模块、算法库、配置、模块元数据、init 链接和运行时加载项。
-+脚本可重复运行。它会检查并应用 `build/make`、`vendor/twrp` 和 `bootable/recovery` 三份 patch，从 OrangeFox 自带 `extra-languages` 安装 `es_ES`、`hu_HU`、`zh_CN` 和 `zh_TW`，保留、验证内置的 `ja_JP`，然后自动运行完整构建输入预检。预检默认要求 pinned manifest 中全部 662 个 repo 项目（包括 OrangeFox `vendor/recovery` 和 `external/se_omapi`）与已验证 revision 一致，并检查 FocalTech 模块、算法库、配置、模块元数据、init 链接和运行时加载项。
- 
- `RODIN_ALLOW_UNPINNED_SOURCE=1` 只用于主动移植到新 revision；它会跳过源码 revision 限制，但不会跳过 blob、FocalTech 资源和 patch 标记检查。普通重复构建不要设置。
- 
- 如果 patch 因源码版本变化而不能应用，先把对应仓库恢复到表中的基线，或人工 rebase patch。不要使用 `git apply --reject` 后忽略冲突继续构建。
- 
-+若拿到的是未包含 FBE/Global 修复的原始 rodin 设备树，在将该 patch 放在设备树外部后先做 dry-run：
-+
-+```bash
-+patch -d device/xiaomi/rodin -p1 --dry-run < /path/to/rodin-fbe-global.patch
-+patch -d device/xiaomi/rodin -p1 < /path/to/rodin-fbe-global.patch
-+```
-+
-+patch 成功后，Global profile 还必须导入对应固件 fragment；CN 默认 profile 不需要此步骤。
-+
- ## 6. 准备 stock vendor_boot 输入
- 
- 不要从网络上随便下载其他版本的 `vendor_boot`。优先使用当前系统 OTA/分区备份中提取的镜像。
-@@ -160,6 +243,19 @@ ls -lh "$PRODUCT_TMP"
- 
- 当前已验证输入的哈希见 [prebuilt/README.md](../prebuilt/README.md)。
- 
-+CN 是默认 profile。Global OS3.0.301.0.WOJMIXM 必须选择它自己的 type-1
-+platform fragment；不要把默认 CN 成品刷入 Global 系统。
-+
-+从完整 Global 固件包填充该 fragment：
-+
-+```bash
-+device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
-+  /path/to/rodin_global_images_OS3.0.301.0.WOJMIXM_16.0/images/vendor_boot.img
-+```
-+
-+脚本只接受已验证的 Global 3.0.301 `vendor_boot.img`，并检查整镜像、type-1
-+fragment 和 DTB 哈希。不要手工复制或复用其他 release 的 244 个内核模块。
-+
- ## 7. 为什么不能直接使用普通 vendorbootimage
- 
- rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeFox `vendorbootimage` 生成的是 recovery 中间布局，直接刷入可能导致 Recovery 可启动但 Android 无法启动。
-@@ -171,6 +267,13 @@ rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeF
- 3. stock DTB、header 参数和 cmdline。
- 4. 64 MiB AVB hash footer。
- 
-+type-1 还保留 stock MediaTek AIDL BootControl binary。它的 device VINTF fragment
-+必须位于 `/vendor/etc/vintf/manifest`，不能留在 `/system/etc/vintf/manifest`；后者会被
-+`hwservicemanager` 当作 framework fragment 解析，导致 Keystore2 无法注册。Recovery 用本设备 init rc 启动该服务并 preload libc++ compatibility shim；不能
-+删除它后只依赖旧 HIDL fallback，否则某些 ROM updater 的 `bootctl set-active-boot-slot`
-+会错误返回失败。`BoardConfig.mk` 中的 `OF_USE_AIDL_BOOT_CONTROL := 1` 还会让
-+OrangeFox 自身的 slot selector 使用同一个 AIDL 服务。
-+
- `build-lowmem.sh` 会在 OrangeFox 编译成功后自动执行 `tools/build-system-compatible-vendor-boot.sh`。不要绕过该步骤。
- 
- ## 8. 构建前预检
-@@ -206,6 +309,33 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
-   device/xiaomi/rodin/build-lowmem.sh vendorbootimage
- ```
- 
-+Global OS3.0.301.0.WOJMIXM 使用：
-+
-+```bash
-+RODIN_FIRMWARE_VARIANT=global OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
-+  device/xiaomi/rodin/build-lowmem.sh vendorbootimage
-+```
-+
-+每次成功构建都会生成同一固件 profile 的标准镜像和 `disable-avb` 变体：
-+
-+```text
-+# CN OS3.0.303.0.WOJCNXM
-+OrangeFox-R12.0-Unofficial-rodin-system-compatible.img
-+OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img
-+
-+# Global OS3.0.301.0.WOJMIXM
-+OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img
-+OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img
-+```
-+
-+`disable-avb` 会以 vendor bootconfig 覆盖 Android 可见的 locked/verified boot 属性，
-+并删除 type-1 platform first-stage fstab 中的 `avb`、`avb=*`、`avb_keys=*` fs_mgr flags；
-+vendor_boot 仍保留有效 AVB hash footer。它不会解锁 Bootloader 或改变 Boot ROM/LK 的
-+验签策略。正常设备应使用标准镜像，只有 LK 已允许刷写但 Android 错误报告 locked，或需
-+跳过 Android first-stage 挂载校验时才使用对应基线的该变体。详细属性和限制见
-+[COMPATIBILITY_CN.md](COMPATIBILITY_CN.md#2-disable-avb-变体)。
-+```
-+
- 低内存机器可以把 `OF_BUILD_JOBS` 降到 `1` 或 `2`。构建过程中不要清理 `/tmp`，也不要删除 `out/target/product/rodin/recovery`。
- 
- 成功后只使用：
-@@ -214,6 +344,12 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
- out/target/product/rodin/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img
- ```
- 
-+Global profile 的命名成品为：
-+
-+```text
-+out/target/product/rodin/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img
-+```
-+
- 不要刷生成过程中的：
- 
- - `vendor_ramdisk_recovery.cpio`
-@@ -257,7 +393,8 @@ file "$VERIFY/vendor_ramdisk00" "$VERIFY/vendor_ramdisk01"
- - `vendor_ramdisk01`：type-2，name=`recovery`，最多 7 个补充模块。
- - 两者都是 LZ4 legacy。
- - combined vendor ramdisk 小于 60,000,000 字节。
--- platform fragment 的 `/system/etc/vintf/manifest` 下没有 recovery device manifest。
-+- platform fragment 的 `/system/etc/vintf/manifest` 下没有 `type="device"` VINTF fragment。
-+- `android.hardware.boot-service.mtk.xml` 位于 `/vendor/etc/vintf/manifest`。
- 
- ## 11. 安全刷写与回退
- 
 diff --git a/docs/COMPATIBILITY_CN.md b/docs/COMPATIBILITY_CN.md
 index ec807e7..fc0bea6 100644
 --- a/docs/COMPATIBILITY_CN.md
@@ -1675,308 +1390,6 @@ index ec807e7..fc0bea6 100644
  
  至少收集以下同一槽位、同一 OTA 版本的输入：
  
-diff --git a/docs/DEVICE_TREE_PATCHES_CN.md b/docs/DEVICE_TREE_PATCHES_CN.md
-new file mode 100644
-index 0000000..8c1f825
---- /dev/null
-+++ b/docs/DEVICE_TREE_PATCHES_CN.md
-@@ -0,0 +1,150 @@
-+# rodin 设备树补丁说明
-+
-+## 范围
-+
-+`patches/rodin-fbe-global.patch` 是针对本仓库初始 rodin 设备树快照的文本补丁。它补齐了 FBE 所需的 recovery 依赖和 Global 固件构建 profile；不替换 OrangeFox 共享源码 patch，也不携带任何 firmware blob。
-+
-+补丁涉及：
-+
-+- `Android.bp`：将 Android 15 vendor 的 secure-element 与 OMAPI NDK 预编译库改为 recovery 专用模块名，保留 Android 16 构建图中的 AIDL 生成头文件，并让 `rodin_omapi_bridge` 显式链接 `librodin_libcxx_compat`。
-+- `recovery/root/init.recovery.keymint.rc`：为 OMAPI bridge 设置 vendor/system 运行时库搜索路径和 libc++ compatibility preload；在 `tee-supplicant` 就绪后并行启动 KeyMint、secure-element 与 NXP Weaver，不再以 bridge ready 属性阻塞 Weaver。
-+- `BoardConfig.mk`、`recovery/root/init.recovery.bootctl.rc` 与 post-build repacker：OrangeFox 和 ROM updater 均使用 stock MediaTek AIDL BootControl；重打包器保留 binary，并将其 device VINTF fragment 放到 `/vendor/etc/vintf/manifest`，避免 `/system` framework VINTF 解析失败而使 Keystore2 崩溃。recovery rc 通过 compatibility shim 启动该服务，避免旧 HIDL fallback 的 UFS boot-region ioctl 使 slot 切换失败。
-+- `tools/build-system-compatible-vendor-boot.sh`：增加 `RODIN_FIRMWARE_VARIANT=cn|global`，使最终镜像保留与目标系统相匹配的 type-1 platform ramdisk。
-+- `BoardConfig.mk`、`patches/orangefox-vendor-twrp.patch` 与共享 Recovery patch：CN 保持原有
-+  atomic DRM 的完整 teardown/rebuild；Global 保留相同的 blanktimer/锁屏状态机，但首次完整 setup
-+  后锁屏只对 CRTC 提交 `ACTIVE=0`，不撤销 connector、mode 或 plane binding；唤醒时在保留
-+  这些绑定的前提下重新提交完整 mode/connector/plane 状态，并将扫描面切换到备用 framebuffer。
-+  切换前会复制上一帧，避免 `gui_forceRender()` 前出现未初始化画面；该 framebuffer handoff 让
-+  MTK atomic driver 观察到真实 plane 更新并触发面板恢复。该编译开关经
-+  `vendor/twrp` Soong 显式传给 `libminuitwrp`；仅在 Recovery 退出时完整 teardown 后释放
-+  mode/FB 资源，`TW_NO_SCREEN_BLANK` 仍禁止使用。
-+- `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，先拉取 Git LFS blob，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。
-+- 构建前检查、文件哈希清单和构建文档。
-+
-+这份补丁解决三个已定位的问题：原先 Soong 会把设备树中 Android 15 预编译 NDK 库与 Android 16 AIDL 生成模块混淆，导致 recovery 依赖解析失败；运行时的 bridge 则因找不到 `/vendor/lib64` 内的 NDK 库而无法启动，使 Weaver 被错误的 ready gate 无限阻塞；旧 HIDL BootControl fallback 在 rodin 上会使 UFS boot-region 设置失败并导致 slot 切换失败。它们分别影响可编译性、FBE synthetic-password 流程和 Virtual A/B ROM 更新后的 slot 处理。
-+
-+## OrangeFox 共享 Recovery patch
-+
-+`patches/orangefox-recovery.patch` 由 `tools/apply-orangefox-patches.sh` 应用于 pinned
-+`bootable/recovery`。其中的 Virtual A/B 修复保留第一轮对当前槽位
-+`system_a`、`vendor_a` 等逻辑分区和 `-cow` 的精确清理；仅在后续兜底扫描中跳过
-+`Super_Partition_List` 中的无槽位 mapper alias，例如
-+`/dev/block/mapper/vendor -> vendor_a`。
-+
-+这些 alias 由 Recovery 的 image-flashing 兼容逻辑建立，不是第二个可删除的逻辑分区。
-+因此修复不会关闭 `Check_Pending_Merges()`，也不会绕过 Virtual A/B 的 snapshot merge
-+安全检查。构建后若 Format Data 日志出现
-+`skipping logical partition alias: vendor`，说明已命中该保护；若仍出现
-+`removing dynamic partition: vendor`，刷入的仍是旧镜像或共享 patch 未应用。
-+
-+rodin 的 `mi_ext` 是另一个需要保留 fstab 原始分区名的逻辑分区：它挂载到
-+`/mnt/vendor/mi_ext`，但逻辑分区名是 `mi_ext`，不是由挂载路径去掉 `/` 后得到的名称。
-+共享 patch 会保存 v2 fstab 第一列并用于 mapper 创建和拆除；Recovery 专用 fstab 则排除
-+Android init 专用的 `ro,bind` 和 `overlay` 行。这样不会把 `/mi_ext` 误解析为文件系统，也
-+不会在 Format Data / pending-merge 路径上错误处理 `mi_ext_b`。
-+
-+`persist` 由 stock KeyMint init 路径以 `ro,noload` 挂载到 `/mnt/vendor/persist`。设备树
-+在 Recovery 根目录创建 `/persist` 的只读 bind alias，`twrp.flags` 同样固定为
-+`ro,noload`；共享 patch 因此只从该路径读取早期 OrangeFox 设置，而不会回放 journal 或写入
-+安全存储。不得将其改成普通可写的 `/persist` fstab 项。
-+
-+FBE 已解密后的 `userdata` mapper 与动态分区不是同一类对象，不能由
-+`Unmap_Super_Devices()` 的兜底扫描删除。rodin 在 `BoardConfig.mk` 启用
-+`OF_USE_DMCTL := 1`，将 `dmctl` 放入 Recovery；共享 patch 只在确认格式化 `/data` 时
-+删除 `/dev/block/mapper/userdata`。命令失败或节点在最多一秒后仍存在时会终止格式化，
-+不会继续向仍被映射占用的物理 userdata 块设备执行 `make_f2fs`。
-+
-+共享 patch 还实现了 rodin 单 Type-C 口的 USB OTG 状态机。此机型在 host 尚未被请求时
-+不会打开 `otg_enable` 供电，因此不能以自动 Type-C source/partner 检测作为入口。用户在
-+“挂载”页点 USB 浮动按钮后，状态机先把 `typec/port0/preferred_role` 设为 `source`，再将
-+`sys.usb.config` 设为 `none`、启用 `otg_enable`、通过 `vbus_switch` 打开 stock DTB 中的
-+`usb-otg-vbus` regulator，并把 `11201000.usb0` role switch 置为
-+`host`；此时再于二十秒内插入 U 盘，按钮会变为 X，可显式停止。这避免 stock 的 sink
-+偏好把被动 OTG 转接器错误协商为 `Attached.SNK`。随后只接受 `/sys/block` 中解析路径包含
-+`/usb` 的 SCSI 盘，故内部 UFS `sda`、`sdb`、`sdc` 不会被误挂载。超时未枚举、按 X 或
-+介质拔出时，状态机均会恢复 `device` role、之前的 MTP 状态和 sink 偏好；host 期间 ADB
-+断开属于端口角色切换的预期行为。状态机绝不在 host 模式读取 role-switch 的 `role` 文件，
-+避免这个内核上可能无限阻塞的 sysfs read。
-+
-+CN 运行时进一步证明 stock DTB 的 `xhci0@11200000` 带有
-+`mediatek,usb-offload = <0x15b>`。该属性会令 MTU3 等待 Android USB audio offload
-+provider；Recovery 中 provider 及其音频/基带依赖均未运行，因此 source 协商成功后仍会出现
-+`offload not ready`，不会注册 USB host bus。`tools/patch-vendor-boot-dtb.py` 保留 MTK
-+64-byte wrapper 与所有其他 DTB 节点，只从临时 inner FDT 删除该属性并同步 wrapper 的 DTB
-+和总长度。`build-system-compatible-vendor-boot.sh` 只将这份临时 DTB 写入标准和
-+disable-AVB 成品，绝不改写 `prebuilt/dtb/mt6899-rodin.dtb`。这避免将 ABI 相关的
-+`usb_offload.ko`、音频和基带模块加入 Recovery。
-+
-+本仓库固定了 `relink_libraries` 对 `libprocessgroup_setup.so` 的一个增量构建问题。
-+原规则把 `TARGET_RECOVERY_ROOT_OUT/system/lib64` 同时作为来源和目标；当恢复目录被清理后
-+重建时，可能生成 ELF 大小正确但内容全零的文件。Recovery 的二阶段 `/system/bin/init`
-+会在 OrangeFox 启动前加载该库，结果触发 `Attempted to kill init` kernel panic。共享 patch
-+改从 `TARGET_OUT_SHARED_LIBRARIES` 的已链接库复制；post-build repacker 还会解压 recovery
-+fragment 并验证该库以 `7f 45 4c 46` 开头。检查失败时不会替换最终的
-+`*-system-compatible.img`。
-+
-+## 应用
-+
-+先保存完整设备树和现有工作，再在 OrangeFox 源码根目录执行。补丁文件必须在目标设备树外部，因为应用前目标树中尚不存在该文件。
-+
-+```bash
-+PATCH=/path/to/rodin-fbe-global.patch
-+patch -d device/xiaomi/rodin -p1 --dry-run < "$PATCH"
-+patch -d device/xiaomi/rodin -p1 < "$PATCH"
-+```
-+
-+只对与本项目初始快照相同的设备树直接应用。若 `--dry-run` 有上下文冲突，不要使用 `.rej` 继续构建；先按各文件的功能块人工 rebase，并重新运行完整预检。
-+
-+应用后仍按常规方式执行：
-+
-+```bash
-+device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
-+```
-+
-+该脚本继续负责 `build/make`、`vendor/twrp` 和 `bootable/recovery` 的三个 Git patch；`rodin-fbe-global.patch` 只修改设备树，不能由该脚本对非 Git 设备目录自动应用。
-+
-+## Global 固件输入
-+
-+Global OS3.0.301.0.WOJMIXM 的 244 个 type-1 platform 内核模块与 CN OS3.0.303.0.WOJCNXM 不同。两者 DTB、fstab、first-stage init、SELinux 数据和 type-2 stock recovery fragment 相同，但 type-1 fragment 不能交叉使用。
-+
-+补丁不包含 29,235,080 字节的 `prebuilt/global/vendor_ramdisk00`。从完整 Global 固件包导入：
-+
-+```bash
-+device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
-+  /path/to/rodin_global_images_OS3.0.301.0.WOJMIXM_16.0/images/vendor_boot.img
-+```
-+
-+导入器固定校验以下值，失败时不会覆盖现有输入：
-+
-+| 项目 | 值 |
-+| --- | --- |
-+| Global `vendor_boot.img` 大小 | `67108864` |
-+| Global `vendor_boot.img` SHA-256 | `72b8ae7637af1924de8312855790de91f99abbc9c8c8ab6003ddce14abc4d956` |
-+| type-1 fragment 大小 | `29235080` |
-+| type-1 fragment SHA-256 | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
-+| DTB SHA-256 | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
-+
-+`prebuilt/global/modules/` 的七个 6.6.89 Recovery-only 模块通过 Git LFS 保存。文本 patch
-+只包含它们的 LFS pointer，不包含模块字节；推送设备树前必须把实际模块一并加入并上传 LFS，
-+否则 GitHub Actions 的 `git lfs pull` 无法取得 Global 构建输入：
-+
-+```bash
-+git add .gitattributes prebuilt/global/modules/ prebuilt/README.md
-+git lfs status
-+```
-+
-+然后使用：
-+
-+```bash
-+RODIN_FIRMWARE_VARIANT=global OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
-+  device/xiaomi/rodin/build-lowmem.sh vendorbootimage
-+```
-+
-+CN 3.0.303 默认不设置 `RODIN_FIRMWARE_VARIANT`。两个 profile 都必须先通过：
-+
-+```bash
-+RODIN_FIRMWARE_VARIANT=global \
-+  device/xiaomi/rodin/tools/verify-build-inputs.sh "$PWD"
-+```
-+
-+Global 输出为 `OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img`，不能用于 CN；默认 CN 输出也不能用于 Global。repacker 会将最终 Recovery fragment 中的 7 个 ABI 相关模块与由 Global 输入和固定偏移 patch 生成的预期内容逐字节比较；若复用了 CN 的 recovery fragment，构建会停止而不会输出 Global 成品。
-diff --git a/docs/TROUBLESHOOTING_CN.md b/docs/TROUBLESHOOTING_CN.md
-index c3bc639..bbe0437 100644
---- a/docs/TROUBLESHOOTING_CN.md
-+++ b/docs/TROUBLESHOOTING_CN.md
-@@ -135,10 +135,54 @@ adb shell 'file /twres/fonts/MiSans.ttf'
- -DOF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT=1
- ```
- 
--## 10. Recovery 正常但系统无法启动
-+## 10. Global 锁屏后屏幕仍亮或无法唤醒
-+
-+Global 仍使用标准的 `blanktimer -> gr_fb_blank() -> atomic DRM` 链路，不使用亮度归零
-+workaround。它只在完成首次完整 atomic setup 后，让锁屏提交 CRTC `ACTIVE=0` 并保留
-+connector、mode 和 plane binding；唤醒时重新提交完整 mode/connector/plane 状态，并切换到
-+备用 framebuffer。切换前复制最后显示的一帧，随后原有 `gui_forceRender()` 立即绘制；这样
-+MTK driver 能观察到真实的 plane FB 更新并执行面板恢复链路。这修复的是 Global 完整
-+teardown/rebuild 或同一 FB 重提交流程后无法恢复面板的问题，而非绕开锁屏链路。
-+Recovery 退出时则会先完整 teardown，再释放 mode blob 和 framebuffer，避免仍被 DRM 状态
-+引用的资源被提前释放。
-+
-+不要定义 `TW_NO_SCREEN_BLANK`：它会跳过 CRTC blank，并移除“屏幕关闭时普通输入不应唤醒”的
-+保护，导致日志中出现 `brightness=0` 后立即恢复 `brightness=1000`，表现为已锁屏但屏幕仍亮。
-+
-+新的 Recovery 会在真实 atomic commit 处记录请求方向、connector/CRTC/plane 标识及返回值；
-+锁屏和唤醒各应出现一行
-+`DRM blank retained pipeline: ACTIVE=0`，随后是
-+`DRM blank restore retained pipeline: framebuffer handoff current=... displayed=...` 和成功
-+commit。若 Global 仍无法唤醒，保留这一组 recovery 日志以及同一时段的 dmesg；不能重新启用
-+亮度替代路径。
-+
-+从 ADB 进行一次可重复验证，再用物理电源键重复一次：
-+
-+```bash
-+adb shell input keyevent 26
-+sleep 2
-+adb shell input keyevent 26
-+adb pull /tmp/recovery.log logs/global-screen-wake-recovery.log
-+adb shell dmesg > logs/global-screen-wake-dmesg.txt
-+adb logcat -b kernel -d > logs/global-screen-wake-kernel.log
-+```
-+
-+## 11. Recovery 正常但系统无法启动
- 
- 必须确认最终刷入的是 `OrangeFox-...-system-compatible.img`。正常 Android boot 只选择 type-1 platform fragment；它必须保留 stock first-stage init、linker、libc、fstab、SELinux、firmware 和全部 244 个模块。
- 
-+若 pstore 中出现下列组合：
-+
-+```text
-+device-mapper: verity: ... metadata block ... is corrupted
-+reboot: Restarting system with command 'dm-verity device corrupted'
-+```
-+
-+则故障位于当前槽位的 `/system`/super 完整性校验，不是 `/data` 格式化，也不是 Recovery
-+进程崩溃。此时 `make_f2fs` 的失败不会写入 userdata，更不会损坏 system。使用与当前地区、
-+版本和槽位匹配的完整官方 fastboot 包修复 system/super 与相应 vbmeta；不要在 Recovery 中
-+关闭或绕过 dm-verity。
-+
- 立即回退：
- 
- ```bash
-@@ -148,7 +192,84 @@ fastboot reboot
- 
- 不要在未确认原因前刷另一槽位。
- 
--## 11. 最小日志包
-+## 12. 刷 ROM 后无法 Format Data / `Unable to unmap dynamic partitions`
-+
-+先区分是否在同一 Recovery 会话内操作。Virtual A/B ROM 更新完后，OrangeFox 会提示：
-+
-+```text
-+Devices on super may not mount until after rebooting recovery.
-+To flash additional zips, please reboot recovery to switch to the updated slot.
-+```
-+
-+收到这条提示后不要立即 Format Data。先重启到 Recovery，确认新会话中的
-+`ro.boot.slot_suffix`，再执行格式化。当前日志中 `Unable to unmap dynamic
-+partitions` 发生在 `Check_Pending_Merges()` 内、真正擦除 `/data` 之前。
-+
-+本设备树的当前 `orangefox-recovery.patch` 会在精确清理当前槽位
-+`vendor_a` 等分区后，跳过 `vendor`、`system` 等无槽位 mapper alias。
-+正常日志应出现 `skipping logical partition alias: vendor`，随后才是
-+`checking for merges` 和实际的 Data wipe。若仍出现
-+`removing dynamic partition: vendor` 后立刻报错，说明运行的是未应用此 patch 的旧镜像。
-+
-+### `make_f2fs: Error: In use by the system`
-+
-+这与 `Unable to unmap dynamic partitions` 不同：若日志已出现 `checking for merges`，
-+随后显示物理 `/data` 设备（rodin 常为 `/dev/block/sdc92`）的 `make_f2fs` 被占用，说明
-+FBE 解密创建的 `/dev/block/mapper/userdata` 仍持有该物理设备。
-+
-+当前构建在 `make_f2fs` 前必须显示：
-+
-+```text
-+OrangeFox: running dmctl before formatting...
-+```
-+
-+随后才可以继续格式化。没有这行说明仍在运行旧镜像，或 `OF_USE_DMCTL := 1` 未进入构建。
-+若出现 `Unable to release decrypted userdata` 或 `Decrypted userdata is still busy`，Recovery
-+会安全中止；保存该次 `/tmp/recovery.log`，不要手工删除 `/dev/block/mapper` 节点，也不要
-+擦写 `super` 来规避。
-+
-+如果已经重启 Recovery 后仍失败，必须采集那一次失败的完整日志；不要复用刷包前的
-+日志。连接 ADB 后执行：
-+
-+```bash
-+adb shell getprop ro.boot.slot_suffix
-+adb shell /system/bin/bootctl get-current-slot
-+adb shell /system/bin/bootctl get-active-boot-slot
-+adb shell 'ls -l /dev/block/mapper; cat /proc/mounts | grep -E "dm-|/system|/vendor"'
-+adb pull /tmp/recovery.log logs/recovery-after-reboot.log
-+adb logcat -b all -d > logs/logcat-after-reboot.txt
-+```
-+
-+若日志同时出现 `bootctl set-active-boot-slot` 返回 `Operation failed`，使用保留
-+stock AIDL BootControl 的新构建；旧 HIDL fallback 会在 rodin 上把 UFS boot-region
-+ioctl 失败报告为 slot 切换失败。不要通过手工删除 mapper 节点或强制擦写 `super` 来
-+绕过该错误。
-+
-+## 13. `mi_ext` 等非同名逻辑分区无法挂载
-+
-+rodin 的 stock fstab 将逻辑分区 `mi_ext` 挂载到 `/mnt/vendor/mi_ext`。旧版
-+Recovery 从挂载路径生成逻辑分区名，错误请求 `mnt/vendor/mi_ext_b`；实际设备只存在
-+`mi_ext_b`，所以日志会显示：
-+
-+```text
-+Trying to prepare mnt/vendor/mi_ext from super partition
-+unable to update logical partition: /mnt/vendor/mi_ext
-+```
-+
-+当前 patch 保留 v2 fstab 第一列的原始逻辑名，并在映射与卸载 super 分区时使用它，
-+因此应显示 `Trying to prepare mi_ext from super partition`。Recovery 专用 fstab 同时
-+删除 `ro,bind` 和 `overlay` 这类仅由 Android init 处理的行，避免 TWRP 把 `/mi_ext`
-+误认为文件系统类型。该修复不改写 super、userdata 或 stock first-stage fstab。
-+
-+同一启动日志中，`/persist` 以前会因 `/mnt/vendor/persist` 已由 KeyMint 的 init 脚本
-+以 `ro,noload` 挂载，又被 TWRP 尝试挂载到 `/persist` 而失败。Recovery 现在仅将已有
-+的安全只读挂载 bind 到 `/persist`，并跳过 OrangeFox 对该路径的写入；原始
-+`/mnt/vendor/persist`、journal 策略和 KeyMint 路径均不变。
-+
-+未插入 SD 卡或 USB 存储设备时，`/auto*`、`/external_sd`、`/usb_otg` 的挂载失败是
-+预期状态，不是分区错误。
-+
-+## 14. 最小日志包
- 
- ```bash
- LOGDIR="logs/$(date +%F-%H%M%S)"
 diff --git a/fox_callback.sh b/fox_callback.sh
 index e13a0b2..8e7fa3b 100644
 --- a/fox_callback.sh
@@ -4113,8 +3526,636 @@ index 0000000..9228378
 +
 +if __name__ == "__main__":
 +    raise SystemExit(main())
+diff --git a/BoardConfig.mk b/BoardConfig.mk
+index 70dfc37..7ffe448 100644
+--- a/BoardConfig.mk
++++ b/BoardConfig.mk
+@@ -77,9 +77,12 @@ BOARD_USES_METADATA_PARTITION := true
+ 
+ # Prune the full ncurses database after OrangeFox finishes preparing the
+ # ramdisk, while retaining common terminal definitions.
+-BOARD_RECOVERY_IMAGE_PREPARE = bash $(DEVICE_PATH)/fox_callback.sh $(TARGET_RECOVERY_ROOT_OUT) --first-call
++BOARD_RECOVERY_IMAGE_PREPARE = RODIN_FIRMWARE_VARIANT=$(RODIN_FIRMWARE_VARIANT) bash $(DEVICE_PATH)/fox_callback.sh $(TARGET_RECOVERY_ROOT_OUT) --first-call
+ 
+ AB_OTA_UPDATER := true
++# The retained stock MediaTek service is AIDL. This also makes OrangeFox's
++# slot selector use the same service as the updater's bootctl client.
++OF_USE_AIDL_BOOT_CONTROL := 1
+ AB_OTA_PARTITIONS += \
+     boot \
+     init_boot \
+@@ -127,6 +130,12 @@ TARGET_SCREEN_WIDTH := 1220
+ TARGET_SCREEN_HEIGHT := 2712
+ TW_MAX_BRIGHTNESS := 2047
+ TW_DEFAULT_BRIGHTNESS := 1000
++# Global's stock 6.6.89 MTK DRM can lose the panel after Recovery completely
++# tears down and rebuilds the atomic pipeline. Keep its original blanktimer
++# state machine, but retain the configured pipeline across screen blanking.
++ifeq ($(RODIN_FIRMWARE_VARIANT),global)
++TW_DRM_BLANK_KEEP_PIPELINE := true
++endif
+ # Read capacity directly from the working kernel power-supply node.
+ TW_USE_LEGACY_BATTERY_SERVICES := true
+ TW_INCLUDE_FASTBOOTD := true
+@@ -135,11 +144,18 @@ TW_INCLUDE_LPDUMP := true
+ TW_INCLUDE_REPACKTOOLS := true
+ TW_INCLUDE_RESETPROP := true
+ TW_INCLUDE_EROFS := true
++# Recovery uses its own static userspace plus the stock KeyMint/Weaver stack;
++# it does not need Android's system APEX packages.  Excluding the generic
++# TWRP loop loader avoids stale loop devices on this Android 16 layout.
++TW_EXCLUDE_APEX := true
+ TW_DEFAULT_LANGUAGE := zh_CN
+ # The first decrypt page opens before encrypted Fox settings can be read.
+ OF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT := 1
+ TW_HAS_MTP := true
+ TW_MTP_DEVICE := /dev/mtp_usb
++# This enables the legacy "USB Storage" gadget action. It is deliberately
++# left disabled: OTG is a host-mode, removable-storage workflow and must not
++# expose /data to a connected computer as a block device.
+ TW_NO_USB_STORAGE := true
+ TW_EXCLUDE_DEFAULT_USB_INIT := true
+ TW_INPUT_BLACKLIST := "hbtp_vm"
+@@ -155,6 +171,9 @@ BOARD_HAS_LARGE_FILESYSTEM := true
+ TW_INCLUDE_CRYPTO := true
+ TW_INCLUDE_FBE := true
+ TW_INCLUDE_FBE_METADATA_DECRYPT := true
++# Format Data must release the FBE dm-default-key mapping before mkfs writes
++# the physical userdata block device.
++OF_USE_DMCTL := 1
+ TW_USE_FSCRYPT_POLICY := 2
+ TW_RECOVERY_ADDITIONAL_RELINK_LIBRARY_FILES = \
+     $(TARGET_OUT_SHARED_LIBRARIES)/libtrusty.so \
+diff --git a/docs/BUILD_FROM_SOURCE_CN.md b/docs/BUILD_FROM_SOURCE_CN.md
+index d28fd7e..367bdb3 100644
+--- a/docs/BUILD_FROM_SOURCE_CN.md
++++ b/docs/BUILD_FROM_SOURCE_CN.md
+@@ -35,6 +35,7 @@ sha256sum rodin-device-tree-*.tar.zst
+ | --- | --- |
+ | OrangeFox 分支 | `fox_14.1` |
+ | `bootable/recovery` 基线 | `fd98f33a722bd0bd52034f170bb91e2862654d6b` |
++| `bootable/recovery` 来源 | OrangeFox `fox_14.1`（manifest 使用 50 层浅克隆覆盖全局 1 层设置） |
+ | `build/make` 基线 | `506df226dd003a364916b6b3ee1eb3bf9064f97f` |
+ | `vendor/recovery` 基线 | `0d7959e6538db5ddfff892cf7dfe207c68b0b753` |
+ | 设备 | Redmi Turbo 4 / `rodin` / `24129RT7CC` |
+@@ -70,6 +71,48 @@ sudo apt install -y \
+ 
+ 不要在空间不足的根分区构建。Soong 生成构建图时会出现短时高内存峰值。
+ 
++### GitHub Actions 标准托管 Runner
++
++设备树中的 `.github/workflows/build.yml` 使用 GitHub 托管的
++`ubuntu-24.04`，不需要自行注册 `self-hosted` Runner。流程会在同步源码前
++删除该临时 VM 上不参与构建的 Android SDK、语言工具缓存、浏览器和 Docker
++层，然后安装构建依赖、从 Git LFS 拉取 `prebuilt/` 输入，并补足至少 12 GiB
++swap。CI 只补足缺少的 swap 并为 header 预留余量，不会丢弃托管镜像已有的
++swap。
++
++rodin 在删除 `.repo` 后，源码与完整 `out/` 的构建峰值仍约为 83 GiB。因此
++工作流只会在 swap 建立后仍有至少 98 GiB 可用空间、且物理内存至少 14 GiB
++时继续同步和构建。看到 `df` 中约 63 GiB 空闲，只说明 Job 已经被 GitHub
++托管 VM 调度，尚不足以证明完整构建可完成。
++
++工作流只缓存每个固件 profile 最多 3 GiB 的 `ccache`，不缓存完整源码或 `out/`；后两者
++体积过大，传输与解压反而会拖慢 GitHub 托管 Runner。首次构建仍是冷构建，后续构建会复用
++C/C++ 编译结果，并在日志中输出命中率。同步完成并删除 `.repo` 后，工作流会为该缓存保留
++空间，要求至少 38 GiB 可用空间才启动 Soong。
++缓存的恢复与保存均为 best-effort；缓存服务暂时失败时会退回冷构建，不会阻止已验证镜像上传或发布。
++
++push 以及手动选择 `firmware_variant=all` 的工作流会构建 CN 和 Global 两个矩阵项；同一分支的
++新工作流会通过并发组取消该分支仍在运行或排队的旧工作流。手动触发时可选择 `cn` 或 `global`
++只构建一个 profile，以缩短调试周期；这种单 profile 运行只上传 artifact，不创建不完整的
++prerelease。
++
++只修改 `README.md`、`docs/` 或 issue template 的 push 会被 `paths-ignore` 跳过，不消耗完整构建。
++
++只有 `main` 上成功的构建会创建 prerelease。其他 ref 的手动构建仍会上传
++artifact，但不会向仓库发布 release。
++
++GitHub 托管镜像的实际磁盘布局会变化，因此工作流以运行时的 `df` 与
++`/proc/meminfo` 为准，而不假定固定容量。GitHub 托管 Job 最长运行 6 小时，
++故工作流默认只使用两个并行编译任务。若清理后的实际空间仍未达到 98 GiB，
++应配置 GitHub-hosted larger runner，而不是降低容量阈值或改回 recovery-only
++打包路径。
++
++`bootable/recovery` 的本地路径与上游项目名不同：OrangeFox GitLab 项目名必须是
++`bootable/Recovery`，而不是 Android mirror 所用的 `android_bootable_recovery`。
++Repo 以 `remote.fetch + project.name` 构造 clone URL，因此前者会得到
++`https://gitlab.com/OrangeFox/bootable/Recovery.git`。CI 仍以固定 SHA 同步该项目，
++使用 HTTP/1.1，并对瞬时 fetch 错误重试三次。
++
+ ## 4. 获取 OrangeFox 14.1
+ 
+ ```bash
+@@ -87,7 +130,7 @@ test -f build/envsetup.sh
+ git -C bootable/recovery rev-parse HEAD
+ ```
+ 
+-如果 `bootable/recovery` 已偏离上述基线，设备 patch 可能需要手动 rebase，不能强行 `git apply`。
++上游 `14.1` 分支会继续前进，以上官方同步命令不保证得到本设备已验证的源码快照。正式构建必须让 `device/xiaomi/rodin/manifests/orangefox-fox_14.1-pinned.xml` 中的 662 个 revision 全部通过预检；CI 会以该文件初始化 `repo`。若手动同步后的 `bootable/recovery` 已偏离上述基线，先按该 manifest 恢复源码，不要设置 `RODIN_ALLOW_UNPINNED_SOURCE=1` 绕过检查或强行 `git apply`。
+ 
+ ## 5. 放置设备树并应用 Fox 源码 patch
+ 
+@@ -97,10 +140,11 @@ git -C bootable/recovery rev-parse HEAD
+ device/xiaomi/rodin
+ ```
+ 
+-设备树包含两份源码 patch：
++设备树包含两份 OrangeFox 共享源码 patch，以及一份可移植的设备树修复 patch：
+ 
+ - `orangefox-build-make.patch`：OrangeFox 14.1 标准构建桥接，负责调用 `vendor/recovery/OrangeFox_A14.sh`。官方 vendor 克隆流程通常已经应用，脚本会自动跳过。
+ - `orangefox-recovery.patch`：本设备实测所需的 recovery 共享源码修复。
++- `rodin-fbe-global.patch`：针对本设备树初始快照的 FBE/OMAPI/Weaver 修复及 CN/Global 构建 profile。它不包含 Global 固件二进制输入，应用方法和变更说明见 [DEVICE_TREE_PATCHES_CN.md](DEVICE_TREE_PATCHES_CN.md)。
+ 
+ recovery patch 包含：
+ 
+@@ -109,6 +153,39 @@ recovery patch 包含：
+ - rodin 解密后禁止完整 GUI package 重建，避免 recovery `SIGSEGV`。
+ - 解密页面显示前加载默认简体中文。
+ - MiSans 主题选择项和 SIH6887 震动节点支持。
++- USB OTG host 状态机：断开电脑后，在“挂载”页先点 USB 浮动按钮，再于 20 秒内插入
++  U 盘。它会临时将 Type-C 首选电源角色设为 source、解绑 ADB/MTP、使用 `vbus_switch` 打开
++  `usb-otg-vbus` regulator 并切换 host；失败、
++  按 X 停止或拔出后恢复 device/MTP 和 sink 偏好。内部 UFS 的 `sdX` 节点始终不会被识别为
++  OTG 介质，且 host 期间不会读取会阻塞的 role-switch `role` 属性。
++- Global OS3.0.301.0.WOJMIXM 必须设置 `RODIN_FIRMWARE_VARIANT=global`。它使用自己的
++  6.6.89 platform ramdisk；最终打包还会替换 7 个 ABI 相关的触摸、haptic 和 eSE 模块，
++  并在 Make 复制 `recovery/root` 前生成已修补的模块源目录，避免产品复制顺序覆盖 Global
++  模块。该目录应用 Global 固定偏移的 SCP/Goodix/FocalTech Recovery patch；该 patch 使用
++  Android 构建环境允许的 `python3`，不依赖被 Soong PATH 限制的 `perl`。repacker 会验证其中的
++  Type-C/OTG 模块及 `vbus_switch`，并将最终 Recovery 的 7 个模块逐字节比对为已修补的
++  Global 输入，防止 CN recovery fragment 被误用；DTB 与 CN 基线完全相同，仍会移除 xHCI 的
++  `mediatek,usb-offload` 属性。Global 保留原始的 `blanktimer -> gr_fb_blank()` 锁屏状态机，
++  但首次完整配置 atomic DRM pipeline 后，后续锁屏只切换 CRTC `ACTIVE=0` 并保留 connector、
++  mode 和 plane 绑定；唤醒时重新提交完整 mode/connector/plane 状态，并在该 atomic commit 中
++  切换到备用 framebuffer。切换前会复制上一帧，随后原有 `gui_forceRender()` 立即绘制；这让
++  MTK driver 观察到真实 plane 更新并触发面板恢复，同时避免 stock 6.6.89 在完整
++  teardown/rebuild 后无法恢复面板。
++  仅 Recovery 退出时才完整拆除这些绑定，再释放 mode blob 和 framebuffer；
++  `TW_NO_SCREEN_BLANK` 仍不得定义。
++- stock DTB 的 xHCI 节点依赖 Android USB audio offload；Recovery 不加载其音频/基带依赖。
++  repacker 会用 `fdtput` 在临时 DTB 删除唯一的 `mediatek,usb-offload` 属性，并保留、更新
++  MTK wrapper 长度字段。构建主机必须提供 `device-tree-compiler`（`fdtget`、`fdtput`）。
++- `TW_EXCLUDE_APEX := true`：rodin Recovery 的 FBE 使用 ramdisk 内的 KeyMint/Weaver 与
++  vendor 库，不依赖 `/system_root/system/apex`。因此不编译 TWRP 的通用 APEX loop loader，
++  避免 Android 16 APEX 在 Recovery 中留下 loop 设备或干扰后续动态分区操作。
++- Recovery 二阶段 `libprocessgroup_setup.so` 的构建来源修复，并在最终重打包前验证其
++  ELF magic；若该检查失败，停止构建，不能刷写输出目录中遗留的旧镜像。
++- `mi_ext` 使用 v2 fstab 第一列的原始逻辑分区名完成 mapper 创建和拆除；Recovery fstab
++  不解析 Android init 的 `ro,bind` / `overlay` 行。KeyMint 的只读 `persist` 挂载会 bind
++  到 `/persist`，OrangeFox 只读取、不写入该安全存储。
++- Virtual A/B `Format Data` 时保留 `vendor -> vendor_a` 等无槽位 mapper 别名，避免在 pending-merge 检查前错误删除别名而中止格式化；`*_a`/`*_b` 与 `-cow` 的精确清理不变。
++- Android 16 FBE 已解密后，先用 Recovery 内置 `dmctl` 释放 `/dev/block/mapper/userdata`，确认映射消失后才格式化物理 userdata 分区；删除失败会中止操作。
+ 
+ 在干净源码中执行：
+ 
+@@ -116,12 +193,21 @@ recovery patch 包含：
+ device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
+ ```
+ 
+-脚本可重复运行。它会检查并应用两份 patch，从 OrangeFox 自带 `extra-languages` 安装 `es_ES`、`hu_HU`、`zh_CN` 和 `zh_TW`，保留、验证内置的 `ja_JP`，然后自动运行完整构建输入预检。预检默认要求 pinned manifest 中全部 660 个 repo 项目以及独立的 `vendor/recovery` 与已验证 revision 一致，并检查 FocalTech 模块、算法库、配置、模块元数据、init 链接和运行时加载项。
++脚本可重复运行。它会检查并应用 `build/make`、`vendor/twrp` 和 `bootable/recovery` 三份 patch，从 OrangeFox 自带 `extra-languages` 安装 `es_ES`、`hu_HU`、`zh_CN` 和 `zh_TW`，保留、验证内置的 `ja_JP`，然后自动运行完整构建输入预检。预检默认要求 pinned manifest 中全部 662 个 repo 项目（包括 OrangeFox `vendor/recovery` 和 `external/se_omapi`）与已验证 revision 一致，并检查 FocalTech 模块、算法库、配置、模块元数据、init 链接和运行时加载项。
+ 
+ `RODIN_ALLOW_UNPINNED_SOURCE=1` 只用于主动移植到新 revision；它会跳过源码 revision 限制，但不会跳过 blob、FocalTech 资源和 patch 标记检查。普通重复构建不要设置。
+ 
+ 如果 patch 因源码版本变化而不能应用，先把对应仓库恢复到表中的基线，或人工 rebase patch。不要使用 `git apply --reject` 后忽略冲突继续构建。
+ 
++若拿到的是未包含 FBE/Global 修复的原始 rodin 设备树，在将该 patch 放在设备树外部后先做 dry-run：
++
++```bash
++patch -d device/xiaomi/rodin -p1 --dry-run < /path/to/rodin-fbe-global.patch
++patch -d device/xiaomi/rodin -p1 < /path/to/rodin-fbe-global.patch
++```
++
++patch 成功后，Global profile 还必须导入对应固件 fragment；CN 默认 profile 不需要此步骤。
++
+ ## 6. 准备 stock vendor_boot 输入
+ 
+ 不要从网络上随便下载其他版本的 `vendor_boot`。优先使用当前系统 OTA/分区备份中提取的镜像。
+@@ -160,6 +246,19 @@ ls -lh "$PRODUCT_TMP"
+ 
+ 当前已验证输入的哈希见 [prebuilt/README.md](../prebuilt/README.md)。
+ 
++CN 是默认 profile。Global OS3.0.301.0.WOJMIXM 必须选择它自己的 type-1
++platform fragment；不要把默认 CN 成品刷入 Global 系统。
++
++从完整 Global 固件包填充该 fragment：
++
++```bash
++device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
++  /path/to/rodin_global_images_OS3.0.301.0.WOJMIXM_16.0/images/vendor_boot.img
++```
++
++脚本只接受已验证的 Global 3.0.301 `vendor_boot.img`，并检查整镜像、type-1
++fragment 和 DTB 哈希。不要手工复制或复用其他 release 的 244 个内核模块。
++
+ ## 7. 为什么不能直接使用普通 vendorbootimage
+ 
+ rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeFox `vendorbootimage` 生成的是 recovery 中间布局，直接刷入可能导致 Recovery 可启动但 Android 无法启动。
+@@ -171,6 +270,13 @@ rodin 的正常系统启动依赖 stock type-1 platform ramdisk。普通 OrangeF
+ 3. stock DTB、header 参数和 cmdline。
+ 4. 64 MiB AVB hash footer。
+ 
++type-1 还保留 stock MediaTek AIDL BootControl binary。它的 device VINTF fragment
++必须位于 `/vendor/etc/vintf/manifest`，不能留在 `/system/etc/vintf/manifest`；后者会被
++`hwservicemanager` 当作 framework fragment 解析，导致 Keystore2 无法注册。Recovery 用本设备 init rc 启动该服务并 preload libc++ compatibility shim；不能
++删除它后只依赖旧 HIDL fallback，否则某些 ROM updater 的 `bootctl set-active-boot-slot`
++会错误返回失败。`BoardConfig.mk` 中的 `OF_USE_AIDL_BOOT_CONTROL := 1` 还会让
++OrangeFox 自身的 slot selector 使用同一个 AIDL 服务。
++
+ `build-lowmem.sh` 会在 OrangeFox 编译成功后自动执行 `tools/build-system-compatible-vendor-boot.sh`。不要绕过该步骤。
+ 
+ ## 8. 构建前预检
+@@ -206,6 +312,33 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
+   device/xiaomi/rodin/build-lowmem.sh vendorbootimage
+ ```
+ 
++Global OS3.0.301.0.WOJMIXM 使用：
++
++```bash
++RODIN_FIRMWARE_VARIANT=global OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
++  device/xiaomi/rodin/build-lowmem.sh vendorbootimage
++```
++
++每次成功构建都会生成同一固件 profile 的标准镜像和 `disable-avb` 变体：
++
++```text
++# CN OS3.0.303.0.WOJCNXM
++OrangeFox-R12.0-Unofficial-rodin-system-compatible.img
++OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img
++
++# Global OS3.0.301.0.WOJMIXM
++OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img
++OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img
++```
++
++`disable-avb` 会以 vendor bootconfig 覆盖 Android 可见的 locked/verified boot 属性，
++并删除 type-1 platform first-stage fstab 中的 `avb`、`avb=*`、`avb_keys=*` fs_mgr flags；
++vendor_boot 仍保留有效 AVB hash footer。它不会解锁 Bootloader 或改变 Boot ROM/LK 的
++验签策略。正常设备应使用标准镜像，只有 LK 已允许刷写但 Android 错误报告 locked，或需
++跳过 Android first-stage 挂载校验时才使用对应基线的该变体。详细属性和限制见
++[COMPATIBILITY_CN.md](COMPATIBILITY_CN.md#2-disable-avb-变体)。
++```
++
+ 低内存机器可以把 `OF_BUILD_JOBS` 降到 `1` 或 `2`。构建过程中不要清理 `/tmp`，也不要删除 `out/target/product/rodin/recovery`。
+ 
+ 成功后只使用：
+@@ -214,6 +347,12 @@ OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
+ out/target/product/rodin/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img
+ ```
+ 
++Global profile 的命名成品为：
++
++```text
++out/target/product/rodin/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img
++```
++
+ 不要刷生成过程中的：
+ 
+ - `vendor_ramdisk_recovery.cpio`
+@@ -257,7 +396,8 @@ file "$VERIFY/vendor_ramdisk00" "$VERIFY/vendor_ramdisk01"
+ - `vendor_ramdisk01`：type-2，name=`recovery`，最多 7 个补充模块。
+ - 两者都是 LZ4 legacy。
+ - combined vendor ramdisk 小于 60,000,000 字节。
+-- platform fragment 的 `/system/etc/vintf/manifest` 下没有 recovery device manifest。
++- platform fragment 的 `/system/etc/vintf/manifest` 下没有 `type="device"` VINTF fragment。
++- `android.hardware.boot-service.mtk.xml` 位于 `/vendor/etc/vintf/manifest`。
+ 
+ ## 11. 安全刷写与回退
+ 
+diff --git a/docs/DEVICE_TREE_PATCHES_CN.md b/docs/DEVICE_TREE_PATCHES_CN.md
+new file mode 100644
+index 0000000..4dbdced
+--- /dev/null
++++ b/docs/DEVICE_TREE_PATCHES_CN.md
+@@ -0,0 +1,153 @@
++# rodin 设备树补丁说明
++
++## 范围
++
++`patches/rodin-fbe-global.patch` 是针对本仓库初始 rodin 设备树快照的文本补丁。它补齐了 FBE 所需的 recovery 依赖和 Global 固件构建 profile；不替换 OrangeFox 共享源码 patch，也不携带任何 firmware blob。
++
++补丁涉及：
++
++- `Android.bp`：将 Android 15 vendor 的 secure-element 与 OMAPI NDK 预编译库改为 recovery 专用模块名，保留 Android 16 构建图中的 AIDL 生成头文件，并让 `rodin_omapi_bridge` 显式链接 `librodin_libcxx_compat`。
++- `recovery/root/init.recovery.keymint.rc`：为 OMAPI bridge 设置 vendor/system 运行时库搜索路径和 libc++ compatibility preload；在 `tee-supplicant` 就绪后并行启动 KeyMint、secure-element 与 NXP Weaver，不再以 bridge ready 属性阻塞 Weaver。
++- `BoardConfig.mk`、`recovery/root/init.recovery.bootctl.rc` 与 post-build repacker：OrangeFox 和 ROM updater 均使用 stock MediaTek AIDL BootControl；重打包器保留 binary，并将其 device VINTF fragment 放到 `/vendor/etc/vintf/manifest`，避免 `/system` framework VINTF 解析失败而使 Keystore2 崩溃。recovery rc 通过 compatibility shim 启动该服务，避免旧 HIDL fallback 的 UFS boot-region ioctl 使 slot 切换失败。
++- `BoardConfig.mk`：rodin 不启用 TWRP 的通用 APEX loop loader（`TW_EXCLUDE_APEX := true`）。
++  Recovery 的 KeyMint/Weaver/FBE 链路不依赖 system APEX；跳过它可避免 Android 16 APEX
++  的失败 loop 绑定残留，并且不修改系统内的 APEX 文件或正常 Android 启动路径。
++- `tools/build-system-compatible-vendor-boot.sh`：增加 `RODIN_FIRMWARE_VARIANT=cn|global`，使最终镜像保留与目标系统相匹配的 type-1 platform ramdisk。
++- `BoardConfig.mk`、`patches/orangefox-vendor-twrp.patch` 与共享 Recovery patch：CN 保持原有
++  atomic DRM 的完整 teardown/rebuild；Global 保留相同的 blanktimer/锁屏状态机，但首次完整 setup
++  后锁屏只对 CRTC 提交 `ACTIVE=0`，不撤销 connector、mode 或 plane binding；唤醒时在保留
++  这些绑定的前提下重新提交完整 mode/connector/plane 状态，并将扫描面切换到备用 framebuffer。
++  切换前会复制上一帧，避免 `gui_forceRender()` 前出现未初始化画面；该 framebuffer handoff 让
++  MTK atomic driver 观察到真实 plane 更新并触发面板恢复。该编译开关经
++  `vendor/twrp` Soong 显式传给 `libminuitwrp`；仅在 Recovery 退出时完整 teardown 后释放
++  mode/FB 资源，`TW_NO_SCREEN_BLANK` 仍禁止使用。
++- `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，先拉取 Git LFS blob，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。
++- 构建前检查、文件哈希清单和构建文档。
++
++这份补丁解决三个已定位的问题：原先 Soong 会把设备树中 Android 15 预编译 NDK 库与 Android 16 AIDL 生成模块混淆，导致 recovery 依赖解析失败；运行时的 bridge 则因找不到 `/vendor/lib64` 内的 NDK 库而无法启动，使 Weaver 被错误的 ready gate 无限阻塞；旧 HIDL BootControl fallback 在 rodin 上会使 UFS boot-region 设置失败并导致 slot 切换失败。它们分别影响可编译性、FBE synthetic-password 流程和 Virtual A/B ROM 更新后的 slot 处理。
++
++## OrangeFox 共享 Recovery patch
++
++`patches/orangefox-recovery.patch` 由 `tools/apply-orangefox-patches.sh` 应用于 pinned
++`bootable/recovery`。其中的 Virtual A/B 修复保留第一轮对当前槽位
++`system_a`、`vendor_a` 等逻辑分区和 `-cow` 的精确清理；仅在后续兜底扫描中跳过
++`Super_Partition_List` 中的无槽位 mapper alias，例如
++`/dev/block/mapper/vendor -> vendor_a`。
++
++这些 alias 由 Recovery 的 image-flashing 兼容逻辑建立，不是第二个可删除的逻辑分区。
++因此修复不会关闭 `Check_Pending_Merges()`，也不会绕过 Virtual A/B 的 snapshot merge
++安全检查。构建后若 Format Data 日志出现
++`skipping logical partition alias: vendor`，说明已命中该保护；若仍出现
++`removing dynamic partition: vendor`，刷入的仍是旧镜像或共享 patch 未应用。
++
++rodin 的 `mi_ext` 是另一个需要保留 fstab 原始分区名的逻辑分区：它挂载到
++`/mnt/vendor/mi_ext`，但逻辑分区名是 `mi_ext`，不是由挂载路径去掉 `/` 后得到的名称。
++共享 patch 会保存 v2 fstab 第一列并用于 mapper 创建和拆除；Recovery 专用 fstab 则排除
++Android init 专用的 `ro,bind` 和 `overlay` 行。这样不会把 `/mi_ext` 误解析为文件系统，也
++不会在 Format Data / pending-merge 路径上错误处理 `mi_ext_b`。
++
++`persist` 由 stock KeyMint init 路径以 `ro,noload` 挂载到 `/mnt/vendor/persist`。设备树
++在 Recovery 根目录创建 `/persist` 的只读 bind alias，`twrp.flags` 同样固定为
++`ro,noload`；共享 patch 因此只从该路径读取早期 OrangeFox 设置，而不会回放 journal 或写入
++安全存储。不得将其改成普通可写的 `/persist` fstab 项。
++
++FBE 已解密后的 `userdata` mapper 与动态分区不是同一类对象，不能由
++`Unmap_Super_Devices()` 的兜底扫描删除。rodin 在 `BoardConfig.mk` 启用
++`OF_USE_DMCTL := 1`，将 `dmctl` 放入 Recovery；共享 patch 只在确认格式化 `/data` 时
++删除 `/dev/block/mapper/userdata`。命令失败或节点在最多一秒后仍存在时会终止格式化，
++不会继续向仍被映射占用的物理 userdata 块设备执行 `make_f2fs`。
++
++共享 patch 还实现了 rodin 单 Type-C 口的 USB OTG 状态机。此机型在 host 尚未被请求时
++不会打开 `otg_enable` 供电，因此不能以自动 Type-C source/partner 检测作为入口。用户在
++“挂载”页点 USB 浮动按钮后，状态机先把 `typec/port0/preferred_role` 设为 `source`，再将
++`sys.usb.config` 设为 `none`、启用 `otg_enable`、通过 `vbus_switch` 打开 stock DTB 中的
++`usb-otg-vbus` regulator，并把 `11201000.usb0` role switch 置为
++`host`；此时再于二十秒内插入 U 盘，按钮会变为 X，可显式停止。这避免 stock 的 sink
++偏好把被动 OTG 转接器错误协商为 `Attached.SNK`。随后只接受 `/sys/block` 中解析路径包含
++`/usb` 的 SCSI 盘，故内部 UFS `sda`、`sdb`、`sdc` 不会被误挂载。超时未枚举、按 X 或
++介质拔出时，状态机均会恢复 `device` role、之前的 MTP 状态和 sink 偏好；host 期间 ADB
++断开属于端口角色切换的预期行为。状态机绝不在 host 模式读取 role-switch 的 `role` 文件，
++避免这个内核上可能无限阻塞的 sysfs read。
++
++CN 运行时进一步证明 stock DTB 的 `xhci0@11200000` 带有
++`mediatek,usb-offload = <0x15b>`。该属性会令 MTU3 等待 Android USB audio offload
++provider；Recovery 中 provider 及其音频/基带依赖均未运行，因此 source 协商成功后仍会出现
++`offload not ready`，不会注册 USB host bus。`tools/patch-vendor-boot-dtb.py` 保留 MTK
++64-byte wrapper 与所有其他 DTB 节点，只从临时 inner FDT 删除该属性并同步 wrapper 的 DTB
++和总长度。`build-system-compatible-vendor-boot.sh` 只将这份临时 DTB 写入标准和
++disable-AVB 成品，绝不改写 `prebuilt/dtb/mt6899-rodin.dtb`。这避免将 ABI 相关的
++`usb_offload.ko`、音频和基带模块加入 Recovery。
++
++本仓库固定了 `relink_libraries` 对 `libprocessgroup_setup.so` 的一个增量构建问题。
++原规则把 `TARGET_RECOVERY_ROOT_OUT/system/lib64` 同时作为来源和目标；当恢复目录被清理后
++重建时，可能生成 ELF 大小正确但内容全零的文件。Recovery 的二阶段 `/system/bin/init`
++会在 OrangeFox 启动前加载该库，结果触发 `Attempted to kill init` kernel panic。共享 patch
++改从 `TARGET_OUT_SHARED_LIBRARIES` 的已链接库复制；post-build repacker 还会解压 recovery
++fragment 并验证该库以 `7f 45 4c 46` 开头。检查失败时不会替换最终的
++`*-system-compatible.img`。
++
++## 应用
++
++先保存完整设备树和现有工作，再在 OrangeFox 源码根目录执行。补丁文件必须在目标设备树外部，因为应用前目标树中尚不存在该文件。
++
++```bash
++PATCH=/path/to/rodin-fbe-global.patch
++patch -d device/xiaomi/rodin -p1 --dry-run < "$PATCH"
++patch -d device/xiaomi/rodin -p1 < "$PATCH"
++```
++
++只对与本项目初始快照相同的设备树直接应用。若 `--dry-run` 有上下文冲突，不要使用 `.rej` 继续构建；先按各文件的功能块人工 rebase，并重新运行完整预检。
++
++应用后仍按常规方式执行：
++
++```bash
++device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
++```
++
++该脚本继续负责 `build/make`、`vendor/twrp` 和 `bootable/recovery` 的三个 Git patch；`rodin-fbe-global.patch` 只修改设备树，不能由该脚本对非 Git 设备目录自动应用。
++
++## Global 固件输入
++
++Global OS3.0.301.0.WOJMIXM 的 244 个 type-1 platform 内核模块与 CN OS3.0.303.0.WOJCNXM 不同。两者 DTB、fstab、first-stage init、SELinux 数据和 type-2 stock recovery fragment 相同，但 type-1 fragment 不能交叉使用。
++
++补丁不包含 29,235,080 字节的 `prebuilt/global/vendor_ramdisk00`。从完整 Global 固件包导入：
++
++```bash
++device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
++  /path/to/rodin_global_images_OS3.0.301.0.WOJMIXM_16.0/images/vendor_boot.img
++```
++
++导入器固定校验以下值，失败时不会覆盖现有输入：
++
++| 项目 | 值 |
++| --- | --- |
++| Global `vendor_boot.img` 大小 | `67108864` |
++| Global `vendor_boot.img` SHA-256 | `72b8ae7637af1924de8312855790de91f99abbc9c8c8ab6003ddce14abc4d956` |
++| type-1 fragment 大小 | `29235080` |
++| type-1 fragment SHA-256 | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
++| DTB SHA-256 | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
++
++`prebuilt/global/modules/` 的七个 6.6.89 Recovery-only 模块通过 Git LFS 保存。文本 patch
++只包含它们的 LFS pointer，不包含模块字节；推送设备树前必须把实际模块一并加入并上传 LFS，
++否则 GitHub Actions 的 `git lfs pull` 无法取得 Global 构建输入：
++
++```bash
++git add .gitattributes prebuilt/global/modules/ prebuilt/README.md
++git lfs status
++```
++
++然后使用：
++
++```bash
++RODIN_FIRMWARE_VARIANT=global OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
++  device/xiaomi/rodin/build-lowmem.sh vendorbootimage
++```
++
++CN 3.0.303 默认不设置 `RODIN_FIRMWARE_VARIANT`。两个 profile 都必须先通过：
++
++```bash
++RODIN_FIRMWARE_VARIANT=global \
++  device/xiaomi/rodin/tools/verify-build-inputs.sh "$PWD"
++```
++
++Global 输出为 `OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img`，不能用于 CN；默认 CN 输出也不能用于 Global。repacker 会将最终 Recovery fragment 中的 7 个 ABI 相关模块与由 Global 输入和固定偏移 patch 生成的预期内容逐字节比较；若复用了 CN 的 recovery fragment，构建会停止而不会输出 Global 成品。
+diff --git a/docs/TROUBLESHOOTING_CN.md b/docs/TROUBLESHOOTING_CN.md
+index c3bc639..cb3cf8a 100644
+--- a/docs/TROUBLESHOOTING_CN.md
++++ b/docs/TROUBLESHOOTING_CN.md
+@@ -135,10 +135,54 @@ adb shell 'file /twres/fonts/MiSans.ttf'
+ -DOF_LOAD_DEFAULT_LANGUAGE_BEFORE_DECRYPT=1
+ ```
+ 
+-## 10. Recovery 正常但系统无法启动
++## 10. Global 锁屏后屏幕仍亮或无法唤醒
++
++Global 仍使用标准的 `blanktimer -> gr_fb_blank() -> atomic DRM` 链路，不使用亮度归零
++workaround。它只在完成首次完整 atomic setup 后，让锁屏提交 CRTC `ACTIVE=0` 并保留
++connector、mode 和 plane binding；唤醒时重新提交完整 mode/connector/plane 状态，并切换到
++备用 framebuffer。切换前复制最后显示的一帧，随后原有 `gui_forceRender()` 立即绘制；这样
++MTK driver 能观察到真实的 plane FB 更新并执行面板恢复链路。这修复的是 Global 完整
++teardown/rebuild 或同一 FB 重提交流程后无法恢复面板的问题，而非绕开锁屏链路。
++Recovery 退出时则会先完整 teardown，再释放 mode blob 和 framebuffer，避免仍被 DRM 状态
++引用的资源被提前释放。
++
++不要定义 `TW_NO_SCREEN_BLANK`：它会跳过 CRTC blank，并移除“屏幕关闭时普通输入不应唤醒”的
++保护，导致日志中出现 `brightness=0` 后立即恢复 `brightness=1000`，表现为已锁屏但屏幕仍亮。
++
++新的 Recovery 会在真实 atomic commit 处记录请求方向、connector/CRTC/plane 标识及返回值；
++锁屏和唤醒各应出现一行
++`DRM blank retained pipeline: ACTIVE=0`，随后是
++`DRM blank restore retained pipeline: framebuffer handoff current=... displayed=...` 和成功
++commit。若 Global 仍无法唤醒，保留这一组 recovery 日志以及同一时段的 dmesg；不能重新启用
++亮度替代路径。
++
++从 ADB 进行一次可重复验证，再用物理电源键重复一次：
++
++```bash
++adb shell input keyevent 26
++sleep 2
++adb shell input keyevent 26
++adb pull /tmp/recovery.log logs/global-screen-wake-recovery.log
++adb shell dmesg > logs/global-screen-wake-dmesg.txt
++adb logcat -b kernel -d > logs/global-screen-wake-kernel.log
++```
++
++## 11. Recovery 正常但系统无法启动
+ 
+ 必须确认最终刷入的是 `OrangeFox-...-system-compatible.img`。正常 Android boot 只选择 type-1 platform fragment；它必须保留 stock first-stage init、linker、libc、fstab、SELinux、firmware 和全部 244 个模块。
+ 
++若 pstore 中出现下列组合：
++
++```text
++device-mapper: verity: ... metadata block ... is corrupted
++reboot: Restarting system with command 'dm-verity device corrupted'
++```
++
++则故障位于当前槽位的 `/system`/super 完整性校验，不是 `/data` 格式化，也不是 Recovery
++进程崩溃。此时 `make_f2fs` 的失败不会写入 userdata，更不会损坏 system。使用与当前地区、
++版本和槽位匹配的完整官方 fastboot 包修复 system/super 与相应 vbmeta；不要在 Recovery 中
++关闭或绕过 dm-verity。
++
+ 立即回退：
+ 
+ ```bash
+@@ -148,7 +192,110 @@ fastboot reboot
+ 
+ 不要在未确认原因前刷另一槽位。
+ 
+-## 11. 最小日志包
++## 12. 刷 ROM 后无法 Format Data / `Unable to unmap dynamic partitions`
++
++先区分是否在同一 Recovery 会话内操作。Virtual A/B ROM 更新完后，OrangeFox 会提示：
++
++```text
++Devices on super may not mount until after rebooting recovery.
++To flash additional zips, please reboot recovery to switch to the updated slot.
++```
++
++收到这条提示后不要立即 Format Data。先重启到 Recovery，确认新会话中的
++`ro.boot.slot_suffix`，再执行格式化。当前日志中 `Unable to unmap dynamic
++partitions` 发生在 `Check_Pending_Merges()` 内、真正擦除 `/data` 之前。
++
++本设备树的当前 `orangefox-recovery.patch` 会在精确清理当前槽位
++`vendor_a` 等分区后，跳过 `vendor`、`system` 等无槽位 mapper alias。
++正常日志应出现 `skipping logical partition alias: vendor`，随后才是
++`checking for merges` 和实际的 Data wipe。若仍出现
++`removing dynamic partition: vendor` 后立刻报错，说明运行的是未应用此 patch 的旧镜像。
++
++### `make_f2fs: Error: In use by the system`
++
++这与 `Unable to unmap dynamic partitions` 不同：若日志已出现 `checking for merges`，
++随后显示物理 `/data` 设备（rodin 常为 `/dev/block/sdc92`）的 `make_f2fs` 被占用，说明
++FBE 解密创建的 `/dev/block/mapper/userdata` 仍持有该物理设备。
++
++当前构建在 `make_f2fs` 前必须显示：
++
++```text
++OrangeFox: running dmctl before formatting...
++```
++
++随后才可以继续格式化。没有这行说明仍在运行旧镜像，或 `OF_USE_DMCTL := 1` 未进入构建。
++若出现 `Unable to release decrypted userdata` 或 `Decrypted userdata is still busy`，Recovery
++会安全中止；保存该次 `/tmp/recovery.log`，不要手工删除 `/dev/block/mapper` 节点，也不要
++擦写 `super` 来规避。
++
++如果已经重启 Recovery 后仍失败，必须采集那一次失败的完整日志；不要复用刷包前的
++日志。连接 ADB 后执行：
++
++```bash
++adb shell getprop ro.boot.slot_suffix
++adb shell /system/bin/bootctl get-current-slot
++adb shell /system/bin/bootctl get-active-boot-slot
++adb shell 'ls -l /dev/block/mapper; cat /proc/mounts | grep -E "dm-|/system|/vendor"'
++adb pull /tmp/recovery.log logs/recovery-after-reboot.log
++adb logcat -b all -d > logs/logcat-after-reboot.txt
++```
++
++若日志同时出现 `bootctl set-active-boot-slot` 返回 `Operation failed`，使用保留
++stock AIDL BootControl 的新构建；旧 HIDL fallback 会在 rodin 上把 UFS boot-region
++ioctl 失败报告为 slot 切换失败。不要通过手工删除 mapper 节点或强制擦写 `super` 来
++绕过该错误。
++
++## 13. `mi_ext` 等非同名逻辑分区无法挂载
++
++rodin 的 stock fstab 将逻辑分区 `mi_ext` 挂载到 `/mnt/vendor/mi_ext`。旧版
++Recovery 从挂载路径生成逻辑分区名，错误请求 `mnt/vendor/mi_ext_b`；实际设备只存在
++`mi_ext_b`，所以日志会显示：
++
++```text
++Trying to prepare mnt/vendor/mi_ext from super partition
++unable to update logical partition: /mnt/vendor/mi_ext
++```
++
++当前 patch 保留 v2 fstab 第一列的原始逻辑名，并在映射与卸载 super 分区时使用它，
++因此应显示 `Trying to prepare mi_ext from super partition`。Recovery 专用 fstab 同时
++删除 `ro,bind` 和 `overlay` 这类仅由 Android init 处理的行，避免 TWRP 把 `/mi_ext`
++误认为文件系统类型。该修复不改写 super、userdata 或 stock first-stage fstab。
++
++同一启动日志中，`/persist` 以前会因 `/mnt/vendor/persist` 已由 KeyMint 的 init 脚本
++以 `ro,noload` 挂载，又被 TWRP 尝试挂载到 `/persist` 而失败。Recovery 现在仅将已有
++的安全只读挂载 bind 到 `/persist`，并跳过 OrangeFox 对该路径的写入；原始
++`/mnt/vendor/persist`、journal 策略和 KeyMint 路径均不变。
++
++未插入 SD 卡或 USB 存储设备时，`/auto*`、`/external_sd`、`/usb_otg` 的挂载失败是
++预期状态，不是分区错误。
++
++## 14. `Unable to load apex images` / `failed to mount loop`
++
++这不是 fstab 所列的 `system`、`vendor` 或动态分区挂载失败。它来自 TWRP 的可选
++APEX loop loader，扫描 `/system_root/system/apex` 并把 APEX payload 临时挂载到 `/apex`。
++rodin 的 Recovery FBE 使用 ramdisk 内的 KeyMint/Weaver 和 vendor 库；已验证的解密流程不依赖
++该 loader。
++
++本设备树设置 `TW_EXCLUDE_APEX := true`，构建时会排除 loader，并同时跳过 Format Data 与
++`Unmap_Super_Devices()` 中本来对应的 APEX 卸载调用。系统中的 APEX 文件和正常 Android 启动不受
++影响。新镜像启动后应出现：
++
++```text
++Apex is disabled in this build
++```
++
++且不应再出现以下错误：
++
++```text
++failed to mount loop
++Unable to create loop devices to mount apex files
++Unable to load apex images from /system_root/system/apex
++```
++
++不要把旧镜像的 APEX 错误直接等同于 `Unable to unmap dynamic partitions`。后者应按第 12 节检查
++slot 分区与 mapper alias；本次改动只消除可选 APEX loader 残留 loop 设备的风险。
++
++## 15. 最小日志包
+ 
+ ```bash
+ LOGDIR="logs/$(date +%F-%H%M%S)"
 diff --git a/tools/verify-build-inputs.sh b/tools/verify-build-inputs.sh
-index 4550714..8e886a4 100755
+index 4550714..746ca81 100755
 --- a/tools/verify-build-inputs.sh
 +++ b/tools/verify-build-inputs.sh
 @@ -10,7 +10,12 @@ fail() {
@@ -4184,7 +4225,7 @@ index 4550714..8e886a4 100755
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/scp.ko" ebae9554467e148256cfbab90f0b6d7943d2818ae0cf09bad8aec650bbd99310
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/goodix_core_rodin.ko" 3c2fe7db061743134b715e5a7c361690c3fa36cfacb9c15c1e0bb122e51ac966
  check_sha256 "${DEVICE_DIR}/recovery/root/lib/modules/focaltech_touch_rodin.ko" da967ce3f94ecc81153ee91f7e06a2b48eda0526b857688016ef660844bc70b2
-@@ -130,6 +160,149 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
+@@ -130,6 +160,152 @@ check_contains "${DEVICE_DIR}/recovery/root/system/bin/wait-touch-service.sh" \
  check_contains "${DEVICE_DIR}/fox_callback.sh" \
      'focaltech_touch_rodin.ko|goodix_core_rodin.ko' \
      "FocalTech module is not retained in the final ramdisk"
@@ -4203,6 +4244,9 @@ index 4550714..8e886a4 100755
 +check_contains "${DEVICE_DIR}/BoardConfig.mk" \
 +    'TW_DRM_BLANK_KEEP_PIPELINE := true' \
 +    "Global retained DRM pipeline setting is missing"
++check_contains "${DEVICE_DIR}/BoardConfig.mk" \
++    'TW_EXCLUDE_APEX := true' \
++    "rodin must exclude the optional TWRP APEX loop loader"
 +if grep -qF -- 'TW_NO_SCREEN_BLANK' "${DEVICE_DIR}/BoardConfig.mk"; then
 +    fail "rodin must retain the standard DRM screen-blank state machine"
 +fi
@@ -4334,7 +4378,7 @@ index 4550714..8e886a4 100755
  
  if [[ -f "${DEVICE_DIR}/manifests/device-blobs.sha256" ]] && \
          ! (cd "${TOP_DIR}" && sha256sum --check --quiet "${DEVICE_DIR}/manifests/device-blobs.sha256"); then
-@@ -142,6 +315,7 @@ for script in \
+@@ -142,6 +318,7 @@ for script in \
      "${DEVICE_DIR}/tools/apply-orangefox-patches.sh" \
      "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
      "${DEVICE_DIR}/tools/collect-compat-report.sh" \
@@ -4342,7 +4386,7 @@ index 4550714..8e886a4 100755
      "${DEVICE_DIR}/tools/patch-recovery-touch-modules.sh" \
      "${DEVICE_DIR}/tools/verify-build-inputs.sh"; do
      check_file "$script"
-@@ -156,12 +330,24 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
+@@ -156,12 +333,24 @@ if [[ -f "${DEVICE_DIR}/tools/verify-source-manifest.py" ]]; then
          fail "Python syntax check failed: tools/verify-source-manifest.py"
  fi
  
@@ -4368,7 +4412,7 @@ index 4550714..8e886a4 100755
          search_tree "$marker" "${TOP_DIR}/bootable/recovery" || \
              fail "OrangeFox source patch marker missing: $marker"
      done
-@@ -206,6 +392,56 @@ if [[ -d "${TOP_DIR}/build/make" ]]; then
+@@ -206,6 +395,59 @@ if [[ -d "${TOP_DIR}/build/make" ]]; then
      fi
  fi
  
@@ -4399,6 +4443,9 @@ index 4550714..8e886a4 100755
 +check_contains "${TOP_DIR}/bootable/recovery/minuitwrp/graphics_drm.cpp" \
 +    'DRM shutdown: pipeline torn down before resource release' \
 +    "Global DRM shutdown teardown is missing"
++check_contains "${TOP_DIR}/bootable/recovery/Android.mk" \
++    'LOCAL_CFLAGS += -DTW_EXCLUDE_APEX' \
++    "OrangeFox source does not support excluding the APEX loop loader"
 +check_contains "${TOP_DIR}/bootable/recovery/partitions.hpp" \
 +    'Get_Logical_Partition_Name' \
 +    "logical partition name accessor is missing"
