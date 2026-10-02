@@ -21,7 +21,7 @@
   MTK atomic driver 观察到真实 plane 更新并触发面板恢复。该编译开关经
   `vendor/twrp` Soong 显式传给 `libminuitwrp`；仅在 Recovery 退出时完整 teardown 后释放
   mode/FB 资源，`TW_NO_SCREEN_BLANK` 仍禁止使用。
-- `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，先拉取 Git LFS blob，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。
+- `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，从普通 Git checkout 读取固件文件，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。
 - 构建前检查、文件哈希清单和构建文档。
 
 这份补丁解决三个已定位的问题：原先 Soong 会把设备树中 Android 15 预编译 NDK 库与 Android 16 AIDL 生成模块混淆，导致 recovery 依赖解析失败；运行时的 bridge 则因找不到 `/vendor/lib64` 内的 NDK 库而无法启动，使 Weaver 被错误的 ready gate 无限阻塞；旧 HIDL BootControl fallback 在 rodin 上会使 UFS boot-region 设置失败并导致 slot 切换失败。它们分别影响可编译性、FBE synthetic-password 流程和 Virtual A/B ROM 更新后的 slot 处理。
@@ -127,13 +127,13 @@ device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
 | type-1 fragment SHA-256 | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
 | DTB SHA-256 | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
 
-`prebuilt/global/modules/` 的七个 6.6.89 Recovery-only 模块通过 Git LFS 保存。文本 patch
-只包含它们的 LFS pointer，不包含模块字节；推送设备树前必须把实际模块一并加入并上传 LFS，
-否则 GitHub Actions 的 `git lfs pull` 无法取得 Global 构建输入：
+`prebuilt/global/modules/` 的七个 6.6.89 Recovery-only 模块在本仓库中是普通 Git blob。
+`rodin-fbe-global.patch` 不再创建 LFS pointer，也不包含模块字节；若从初始设备树快照应用该
+补丁，需从本仓库复制这七个模块及 `prebuilt/global/vendor_ramdisk00` 后再预检：
 
 ```bash
-git add .gitattributes prebuilt/global/modules/ prebuilt/README.md
-git lfs status
+cp -a /path/to/this-repo/prebuilt/global/modules/. device/xiaomi/rodin/prebuilt/global/modules/
+cp /path/to/this-repo/prebuilt/global/vendor_ramdisk00 device/xiaomi/rodin/prebuilt/global/
 ```
 
 然后使用：

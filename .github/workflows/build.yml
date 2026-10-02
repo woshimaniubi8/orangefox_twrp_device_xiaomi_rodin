@@ -141,7 +141,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache cpio curl device-tree-compiler flex g++-multilib \
-            gcc-multilib git git-lfs gnupg gperf imagemagick \
+            gcc-multilib git gnupg gperf imagemagick \
             lib32ncurses-dev lib32readline-dev lib32z1-dev libelf-dev \
             liblz4-tool libncurses-dev libsdl1.2-dev libssl-dev libxml2 \
             libxml2-utils lz4 openjdk-17-jdk-headless pngcrush \
@@ -152,18 +152,13 @@ jobs:
           test -x "${java_home}/bin/java"
           echo "JAVA_HOME=${java_home}" >> "$GITHUB_ENV"
 
-      - name: Fetch device blobs
+      - name: Verify checked-out device blobs
         shell: bash
         run: |
           set -euo pipefail
-          git -C "$GITHUB_WORKSPACE/device-tree" lfs pull
-          git -C "$GITHUB_WORKSPACE/device-tree" lfs fsck
           test -s "$GITHUB_WORKSPACE/device-tree/prebuilt/vendor_boot_stock.img"
-          if grep -aqF 'version https://git-lfs.github.com/spec/v1' \
-            "$GITHUB_WORKSPACE/device-tree/prebuilt/vendor_boot_stock.img"; then
-            echo "::error::Git LFS did not materialize prebuilt/vendor_boot_stock.img."
-            exit 1
-          fi
+          test "$(stat -c %s "$GITHUB_WORKSPACE/device-tree/prebuilt/vendor_boot_stock.img")" -eq 67108864
+          test "$(stat -c %s "$GITHUB_WORKSPACE/device-tree/prebuilt/global/vendor_ramdisk00")" -eq 29235080
 
       - name: Setup build swap
         shell: bash

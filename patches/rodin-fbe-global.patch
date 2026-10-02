@@ -1,12 +1,3 @@
-diff --git a/.gitattributes b/.gitattributes
-new file mode 100644
-index 0000000..cbc485f
---- /dev/null
-+++ b/.gitattributes
-@@ -0,0 +1,3 @@
-+*.img filter=lfs diff=lfs merge=lfs -text
-+prebuilt/* filter=lfs diff=lfs merge=lfs -text
-+prebuilt/global/modules/*.ko filter=lfs diff=lfs merge=lfs -text
 diff --git a/.github/scripts/reclaim-github-hosted-space.sh b/.github/scripts/reclaim-github-hosted-space.sh
 new file mode 100644
 index 0000000..4d00278
@@ -163,740 +154,6 @@ index 4c486eb..ff831cd 100644
 +fi
 +
  free -h
-diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
-index 4ac7cc9..78d09ce 100644
---- a/.github/workflows/build.yml
-+++ b/.github/workflows/build.yml
-@@ -1,227 +1,584 @@
--name: OrangeFox Recovery
-+name: Build and publish OrangeFox rodin
- 
- on:
-+  push:
-+    branches:
-+      - main
-+    paths-ignore:
-+      - README.md
-+      - docs/**
-+      - .github/ISSUE_TEMPLATE/**
-   workflow_dispatch:
-     inputs:
--      branch:
--        description: OrangeFox sync branch
-+      publish:
-+        description: Create a prerelease with vendor_boot images
-         required: true
--        default: "14.1"
--      lunch:
--        description: Lunch target
-+        default: true
-+        type: boolean
-+      firmware_variant:
-+        description: Firmware profile to build; single-profile runs upload an artifact only
-         required: true
--        default: "twrp_rodin-ap2a-eng"
--      build_target:
--        description: Build target
--        required: true
--        default: "recoveryimage"
--      runner:
--        description: Runner label
--        required: true
--        default: "ubuntu-latest"
--      build_jobs:
--        description: Parallel build jobs
--        required: true
--        default: "1"
-+        default: all
-+        type: choice
-+        options:
-+          - all
-+          - cn
-+          - global
-+
-+permissions:
-+  contents: read
-+
-+concurrency:
-+  group: orangefox-rodin-${{ github.workflow }}-${{ github.ref }}
-+  cancel-in-progress: true
-+
-+env:
-+  ORANGEFOX_BRANCH: '14.1'
-+  ORANGEFOX_SYNC_REVISION: '11e4406b2bd1de939a26b6bfbad7e371cc3b1fa7'
-+  ORANGEFOX_TOP: ${{ github.workspace }}/OrangeFox
-+  OF_BUILD_JOBS: '1'
-+  CCACHE_DIR: ${{ github.workspace }}/.ccache
-+  CCACHE_MAXSIZE: '3G'
-+  CCACHE_CACHE_VERSION: '1'
- 
- jobs:
-+  plan:
-+    runs-on: ubuntu-24.04
-+    outputs:
-+      variants: ${{ steps.variants.outputs.variants }}
-+      full_release: ${{ steps.variants.outputs.full_release }}
-+    steps:
-+      - name: Select firmware profiles
-+        id: variants
-+        shell: bash
-+        env:
-+          REQUESTED_VARIANT: ${{ inputs.firmware_variant || 'all' }}
-+        run: |
-+          set -euo pipefail
-+          case "${REQUESTED_VARIANT}" in
-+            all)
-+              echo 'variants=["cn","global"]' >> "$GITHUB_OUTPUT"
-+              echo 'full_release=true' >> "$GITHUB_OUTPUT"
-+              ;;
-+            cn|global)
-+              printf 'variants=["%s"]\n' "${REQUESTED_VARIANT}" >> "$GITHUB_OUTPUT"
-+              echo 'full_release=false' >> "$GITHUB_OUTPUT"
-+              ;;
-+            *)
-+              echo "Unsupported firmware_variant: ${REQUESTED_VARIANT}" >&2
-+              exit 1
-+              ;;
-+          esac
-+
-   build:
--    runs-on: ${{ inputs.runner }}
--    timeout-minutes: 720
-+    needs: plan
-+    # Hosted image layouts vary. The first steps reclaim unrelated payloads,
-+    # then verify the observed capacity before building at low concurrency.
-+    runs-on: ubuntu-24.04
-+    timeout-minutes: 360
-+    strategy:
-+      fail-fast: false
-+      matrix:
-+        firmware_variant: ${{ fromJSON(needs.plan.outputs.variants) }}
-+    env:
-+      RODIN_FIRMWARE_VARIANT: ${{ matrix.firmware_variant }}
- 
-     steps:
--      - name: Checkout device tree
-+      - name: Check out device tree
-         uses: actions/checkout@v4
-         with:
-+          fetch-depth: 1
-           path: device-tree
- 
-+      - name: Set build metadata
-+        id: metadata
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+
-+          case "${RODIN_FIRMWARE_VARIANT}" in
-+            cn)
-+              image_name="OrangeFox-R12.0-Unofficial-rodin-system-compatible.img"
-+              disable_avb_image_name="OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img"
-+              firmware_baseline="CN OS3.0.303.0.WOJCNXM"
-+              ;;
-+            global)
-+              image_name="OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img"
-+              disable_avb_image_name="OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img"
-+              firmware_baseline="Global OS3.0.301.0.WOJMIXM"
-+              ;;
-+            *)
-+              echo "Unsupported RODIN_FIRMWARE_VARIANT: ${RODIN_FIRMWARE_VARIANT}" >&2
-+              exit 1
-+              ;;
-+          esac
-+
-+          echo "artifact_name=orangefox-rodin-release-${RODIN_FIRMWARE_VARIANT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
-+          echo "firmware_baseline=${firmware_baseline}" >> "$GITHUB_OUTPUT"
-+          echo "image_name=${image_name}" >> "$GITHUB_OUTPUT"
-+          echo "disable_avb_image_name=${disable_avb_image_name}" >> "$GITHUB_OUTPUT"
-+
-+      - name: Remove stale build worktree
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          rm -rf "$ORANGEFOX_TOP" \
-+            "$GITHUB_WORKSPACE/ofox-sync" \
-+            "$GITHUB_WORKSPACE/pinned-manifest" \
-+            "$GITHUB_WORKSPACE/artifacts"
-+          rm -f "$GITHUB_WORKSPACE/ci-gitconfig" \
-+            "$GITHUB_WORKSPACE/orangefox-build.log"
-+
-+      # This is the cleaner used by Klee's known-working hosted workflow.
-+      # It removes substantially more hosted-image payload than apt cleanup.
-+      - name: Free disk space
-+        uses: rokibhasansagar/slimhub_actions@main
-+
-       - name: Install host packages
-         shell: bash
-         run: |
-           set -euo pipefail
-           sudo apt-get update
--          sudo apt-get install -y \
--            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
--            git gnupg gperf imagemagick lib32ncurses-dev lib32readline-dev \
--            lib32z1-dev libelf-dev liblz4-tool libncurses-dev libsdl1.2-dev \
--            libssl-dev libxml2 libxml2-utils lz4 pngcrush rsync schedtool \
--            squashfs-tools unzip xsltproc zip zlib1g-dev mkbootimg
-+          sudo apt-get install -y --no-install-recommends \
-+            bc bison build-essential ccache cpio curl device-tree-compiler flex g++-multilib \
-+            gcc-multilib git git-lfs gnupg gperf imagemagick \
-+            lib32ncurses-dev lib32readline-dev lib32z1-dev libelf-dev \
-+            liblz4-tool libncurses-dev libsdl1.2-dev libssl-dev libxml2 \
-+            libxml2-utils lz4 openjdk-17-jdk-headless pngcrush \
-+            python-is-python3 python3 ripgrep rsync schedtool squashfs-tools \
-+            unzip xsltproc zip zlib1g-dev
-+          sudo apt-get clean
-+          java_home="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
-+          test -x "${java_home}/bin/java"
-+          echo "JAVA_HOME=${java_home}" >> "$GITHUB_ENV"
-+
-+      - name: Fetch device blobs
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          git -C "$GITHUB_WORKSPACE/device-tree" lfs pull
-+          git -C "$GITHUB_WORKSPACE/device-tree" lfs fsck
-+          test -s "$GITHUB_WORKSPACE/device-tree/prebuilt/vendor_boot_stock.img"
-+          if grep -aqF 'version https://git-lfs.github.com/spec/v1' \
-+            "$GITHUB_WORKSPACE/device-tree/prebuilt/vendor_boot_stock.img"; then
-+            echo "::error::Git LFS did not materialize prebuilt/vendor_boot_stock.img."
-+            exit 1
-+          fi
- 
--      - name: Install repo tool
-+      - name: Setup build swap
-         shell: bash
-         run: |
-           set -euo pipefail
--          mkdir -p "$HOME/bin"
--          curl -L https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
--          chmod +x "$HOME/bin/repo"
--          echo "$HOME/bin" >> "$GITHUB_PATH"
-+          # setup-swap.sh creates only the missing capacity plus a header margin.
-+          MIN_SWAP_GIB=12 \
-+            bash "$GITHUB_WORKSPACE/device-tree/.github/scripts/setup-swap.sh"
- 
--      - name: Show runner resources
-+      - name: Check runner capacity
-         shell: bash
-         run: |
--          df -h
-+          set -euo pipefail
-+
-+          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
-+          # The source/out peak needs roughly 83 GiB. Reserve the 3 GiB
-+          # compiler cache as well as the existing headroom before syncing.
-+          required_kib=$((98 * 1024 * 1024))
-+          if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
-+            available_gib=$((available_kib / 1024 / 1024))
-+            echo "::error::OrangeFox rodin needs at least 98 GiB free after hosted-image cleanup and swap setup; found ${available_gib} GiB."
-+            echo "::error::Use a GitHub-hosted larger runner if this public standard runner image cannot meet the guard."
-+            exit 1
-+          fi
-+
-+          memory_kib="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
-+          required_memory_kib=$((14 * 1024 * 1024))
-+          if [[ -z "${memory_kib}" || "${memory_kib}" -lt "${required_memory_kib}" ]]; then
-+            memory_gib=$((memory_kib / 1024 / 1024))
-+            echo "::error::This workflow needs a public 16 GB-class GitHub-hosted runner; found ${memory_gib} GiB RAM."
-+            exit 1
-+          fi
-+
-+          df -h "$GITHUB_WORKSPACE"
-           free -h
- 
--      - name: Sync OrangeFox
-+      - name: Restore compiler cache
-+        id: ccache_restore
-+        continue-on-error: true
-+        uses: actions/cache/restore@v4
-+        with:
-+          path: ${{ env.CCACHE_DIR }}
-+          key: orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-${{ github.sha }}
-+          restore-keys: |
-+            orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-
-+
-+      - name: Configure compiler cache
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          command -v ccache
-+          install -d "$CCACHE_DIR"
-+          ccache -M "$CCACHE_MAXSIZE"
-+          ccache -z
-+          ccache -p
-+
-+      - name: Install repo tool
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          install -d "$HOME/bin"
-+          curl --fail --location --retry 5 --retry-all-errors \
-+            https://storage.googleapis.com/git-repo-downloads/repo \
-+            --output "$HOME/bin/repo"
-+          chmod +x "$HOME/bin/repo"
-+          echo "$HOME/bin" >> "$GITHUB_PATH"
-+
-+      - name: Sync OrangeFox sources
-         shell: bash
-         run: |
-           set -euo pipefail
-+
-+          manifest_repo="$GITHUB_WORKSPACE/pinned-manifest"
-+          export GIT_CONFIG_GLOBAL="$GITHUB_WORKSPACE/ci-gitconfig"
-+          mkdir -p "$manifest_repo"
-+          cp "$GITHUB_WORKSPACE/device-tree/manifests/orangefox-fox_14.1-pinned.xml" \
-+            "$manifest_repo/default.xml"
-+          git -C "$manifest_repo" init --initial-branch=main --quiet
-+          git -C "$manifest_repo" config user.name "OrangeFox CI"
-+          git -C "$manifest_repo" config user.email "orangefox-ci@localhost"
-+          git -C "$manifest_repo" add default.xml
-+          git -C "$manifest_repo" commit --quiet -m "Pinned OrangeFox 14.1 manifest"
-+          git config --global protocol.file.allow always
-+          # GitLab occasionally resets long HTTP/2 fetches from hosted runners.
-+          # Keep the transport reproducible and tolerate slow pack transfers.
-+          # git config --global http.version HTTP/1.1
-+          git config --global http.lowSpeedLimit 1
-+          git config --global http.lowSpeedTime 600
-+
-+          mkdir -p "$ORANGEFOX_TOP"
-+          cd "$ORANGEFOX_TOP"
-+          repo init --depth=1 \
-+            -u "file://${manifest_repo}" \
-+            -b main \
-+            -m default.xml
-+
-           (
-             while sleep 60; do
--              echo "Heartbeat..."
--              df -h
-+              date -u '+%Y-%m-%dT%H:%M:%SZ sync heartbeat'
-+              df -h "$GITHUB_WORKSPACE"
-               free -h
-             done
-           ) &
--          HEARTBEAT_PID=$!
--          trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
--
--          git clone https://gitlab.com/OrangeFox/sync.git "$GITHUB_WORKSPACE/ofox-sync"
--          cd "$GITHUB_WORKSPACE/ofox-sync"
-+          heartbeat_pid=$!
-+          trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
-+
-+          sync_succeeded=0
-+          for sync_attempt in 1 2 3; do
-+            if repo sync -c -j4 --retry-fetches=3 \
-+              --no-clone-bundle --no-tags --optimized-fetch; then
-+              sync_succeeded=1
-+              break
-+            fi
- 
--          ./orangefox_sync.sh \
--            --branch "${{ inputs.branch }}" \
--            --path "$GITHUB_WORKSPACE/OrangeFox"
-+            if [[ "$sync_attempt" -lt 3 ]]; then
-+              delay_seconds=$((sync_attempt * 20))
-+              echo "::warning::OrangeFox source sync attempt ${sync_attempt} failed; retrying in ${delay_seconds}s."
-+              sleep "$delay_seconds"
-+            fi
-+          done
-+          if [[ "$sync_succeeded" -ne 1 ]]; then
-+            echo "::error::OrangeFox source sync failed after three complete attempts." >&2
-+            exit 1
-+          fi
- 
--          kill "$HEARTBEAT_PID" 2>/dev/null || true
-+          kill "$heartbeat_pid" 2>/dev/null || true
-           trap - EXIT
- 
--      - name: Copy rodin device tree
-+      - name: Apply OrangeFox setup patches
-         shell: bash
-         run: |
-           set -euo pipefail
--          mkdir -p "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi"
- 
-+          sync_dir="$GITHUB_WORKSPACE/ofox-sync"
-+          git clone --filter=blob:none https://gitlab.com/OrangeFox/sync.git "$sync_dir"
-+          git -C "$sync_dir" checkout --detach "$ORANGEFOX_SYNC_REVISION"
-+          test "$(git -C "$sync_dir" rev-parse HEAD)" = "$ORANGEFOX_SYNC_REVISION"
-+
-+          vold_patch="$sync_dir/patches/patch-vold-fox_14.1.diff"
-+          test "$(sha256sum "$vold_patch" | awk '{print $1}')" = \
-+            "29b4b0b387c3185a3dcc69f141a3c84969510547d13ed2de71eefa8423c57778"
-+          if git -C "$ORANGEFOX_TOP/system/vold" apply --reverse --check "$vold_patch" 2>/dev/null; then
-+            echo "OrangeFox system/vold patch is already applied"
-+          else
-+            git -C "$ORANGEFOX_TOP/system/vold" apply --check "$vold_patch"
-+            git -C "$ORANGEFOX_TOP/system/vold" apply "$vold_patch"
-+          fi
-+
-+      - name: Install rodin device tree
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          mkdir -p "$ORANGEFOX_TOP/device/xiaomi/rodin"
-           rsync -a --delete \
--            --exclude ".git" \
--            --exclude "images" \
-+            --exclude .git \
-+            --exclude images \
-             "$GITHUB_WORKSPACE/device-tree/" \
--            "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/"
-+            "$ORANGEFOX_TOP/device/xiaomi/rodin/"
- 
--      - name: Verify prebuilts
-+      - name: Apply source patches & verify
-         shell: bash
-         run: |
-           set -euo pipefail
--          ls -lh "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/prebuilt/vendor_boot_stock.img"
--          ls -lh "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/prebuilt/vendor_ramdisk00" || true
-+          "$ORANGEFOX_TOP/device/xiaomi/rodin/tools/apply-orangefox-patches.sh" \
-+            "$ORANGEFOX_TOP"
- 
--      - name: Free space
-+      - name: Drop sync metadata
-         shell: bash
-         run: |
--          rm -rf "$GITHUB_WORKSPACE/OrangeFox/.repo"
--          rm -rf "$GITHUB_WORKSPACE/ofox-sync"
--          df -h
-+          set -euo pipefail
-+          rm -rf "$ORANGEFOX_TOP/.repo" \
-+            "$GITHUB_WORKSPACE/ofox-sync" \
-+            "$GITHUB_WORKSPACE/pinned-manifest" \
-+            "$GITHUB_WORKSPACE/ci-gitconfig"
-+          df -h "$GITHUB_WORKSPACE"
-           free -h
- 
--      - name: Build OrangeFox
--        shell: bash
--        working-directory: ${{ github.workspace }}/OrangeFox
--        env:
--          ALLOW_MISSING_DEPENDENCIES: "true"
--          FOX_BUILD_DEVICE: rodin
--          FOX_AB_DEVICE: "1"
--          FOX_VIRTUAL_AB_DEVICE: "1"
--          OF_FORCE_PREBUILT_KERNEL: "1"
--          OF_LOW_MEMORY_BUILD: "1"
--          OF_BUILD_JOBS: "1"
--          NINJA_ARGS: "-j1 -l1"
--          SOONG_UI_NINJA_ARGS: "-j1 -l1"
--          USE_CCACHE: "0"
--          GOMAXPROCS: "1"
--          GOGC: "20"
--          GOMEMLIMIT: "3GiB"
--          _JAVA_OPTIONS: "-Xmx3g"
--        run: |
--          set -eo pipefail
--          source build/envsetup.sh
--          lunch "${{ inputs.lunch }}"
--          mka -j1 adbd "${{ inputs.build_target }}" 2>&1 | tee "$GITHUB_WORKSPACE/orangefox-build.log"
--
--      - name: Locate recovery ramdisk
--        if: always()
-+      - name: Check compilation capacity
-         shell: bash
-         run: |
-           set -euo pipefail
--          PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
--
--          find "$PRODUCT" -maxdepth 4 -type f | sort | tee "$GITHUB_WORKSPACE/product_files.txt" || true
--
--          RECOVERY_CPIO=""
--
--          for f in \
--            "$PRODUCT/vendor_ramdisk_recovery.cpio" \
--            "$PRODUCT/obj/PACKAGING/vendor_ramdisk_fragments_intermediates/recovery.cpio.lz4" \
--            "$PRODUCT/obj/PACKAGING/vendor_boot_intermediates/vendor_ramdisk.cpio.lz4" \
--            "$PRODUCT/ramdisk-recovery.img"
--          do
--            if [ -f "$f" ]; then
--              RECOVERY_CPIO="$f"
--              break
--            fi
--          done
- 
--          if [ -z "$RECOVERY_CPIO" ]; then
--            echo "::error::No recovery ramdisk found"
-+          # slimhub reclaims about 138 GiB on the standard hosted image. A
-+          # full pinned source checkout leaves about 45 GiB after .repo is
-+          # removed; reserve the 3 GiB compiler cache and keep a 35 GiB floor
-+          # for Soong before it starts writing out/.
-+          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
-+          required_kib=$((38 * 1024 * 1024))
-+          if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
-+            available_gib=$((available_kib / 1024 / 1024))
-+            echo "::error::OrangeFox rodin needs at least 38 GiB free after .repo cleanup; found ${available_gib} GiB."
-             exit 1
-           fi
- 
--          echo "$RECOVERY_CPIO" > "$GITHUB_WORKSPACE/recovery_cpio_path.txt"
--          ls -lh "$RECOVERY_CPIO"
-+          du -sh "$ORANGEFOX_TOP"
-+          df -h "$GITHUB_WORKSPACE"
- 
--      - name: Repack stock vendor_boot with OrangeFox recovery
-+      - name: Build vendor_boot image
-         shell: bash
-+        working-directory: ${{ env.ORANGEFOX_TOP }}
-+        env:
-+          ALLOW_MISSING_DEPENDENCIES: 'true'
-+          FOX_BUILD_DEVICE: rodin
-+          FOX_AB_DEVICE: '1'
-+          FOX_VIRTUAL_AB_DEVICE: '1'
-+          OF_FORCE_PREBUILT_KERNEL: '1'
-+          OF_LOW_MEMORY_BUILD: '1'
-+          GOMEMLIMIT: '3GiB'
-+          GOGC: '20'
-+          _JAVA_OPTIONS: '-Xmx3g'
-+          USE_CCACHE: '1'
-+          CCACHE_EXEC: /usr/bin/ccache
-+          CCACHE_COMPILERCHECK: content
-+          CCACHE_COMPRESS: 'true'
-         run: |
-           set -euo pipefail
-+          build_jobs="$(nproc)"
-+          export OF_BUILD_JOBS="$build_jobs"
-+          export NINJA_ARGS="-j${build_jobs} -l${build_jobs}"
-+          export SOONG_UI_NINJA_ARGS="$NINJA_ARGS"
-+          printf 'Using %s Ninja jobs\n' "$build_jobs"
- 
--          PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
--          STOCK="$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/prebuilt/vendor_boot_stock.img"
--          RECOVERY_CPIO="$(cat "$GITHUB_WORKSPACE/recovery_cpio_path.txt")"
--          OUT="$PRODUCT/vendor_boot_patched.img"
--          UNPACK="$PRODUCT/stock_vendor_boot"
--
--          rm -rf "$UNPACK"
--          mkdir -p "$UNPACK"
-+          (
-+            while sleep 60; do
-+              date -u '+%Y-%m-%dT%H:%M:%SZ build heartbeat'
-+              df -h "$GITHUB_WORKSPACE"
-+              free -h
-+            done
-+          ) &
-+          heartbeat_pid=$!
-+          trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
- 
--          unpack_bootimg --boot_img "$STOCK" --out "$UNPACK"
-+          device/xiaomi/rodin/build-lowmem.sh vendorbootimage 2>&1 | \
-+            tee "$GITHUB_WORKSPACE/orangefox-build.log"
- 
--          RUNNER_MKBOOTIMG="$(command -v mkbootimg)"
-+          kill "$heartbeat_pid" 2>/dev/null || true
-+          trap - EXIT
- 
--          "$RUNNER_MKBOOTIMG" \
--            --vendor_boot "$OUT" \
--            --header_version 4 \
--            --pagesize 4096 \
--            --base 0x40000000 \
--            --vendor_cmdline "bootopt=64S3,32N2,64N2 erofs.reserved_pages=64" \
--            --vendor_ramdisk "$UNPACK/vendor_ramdisk00" \
--            --dtb "$UNPACK/dtb" \
--            --vendor_bootconfig "$UNPACK/bootconfig"
-+      - name: Report compiler cache
-+        if: always()
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          ccache -s
-+          du -sh "$CCACHE_DIR"
- 
--          unpack_bootimg --boot_img "$OUT" | tee "$GITHUB_WORKSPACE/vendor_boot_patched_info.txt"
-+      - name: Validate release image
-+        shell: bash
-+        env:
-+          IMAGE_NAME: ${{ steps.metadata.outputs.image_name }}
-+          DISABLE_AVB_IMAGE_NAME: ${{ steps.metadata.outputs.disable_avb_image_name }}
-+        run: |
-+          set -euo pipefail
-+          product="$ORANGEFOX_TOP/out/target/product/rodin"
-+          image="$product/$IMAGE_NAME"
-+          disable_avb_image="$product/$DISABLE_AVB_IMAGE_NAME"
-+          avbtool="$ORANGEFOX_TOP/out/host/linux-x86/bin/avbtool"
-+
-+          test -f "$image"
-+          test -f "${image}.sha256"
-+          test -f "$disable_avb_image"
-+          test -f "${disable_avb_image}.sha256"
-+          test -x "$avbtool"
-+          test "$(stat -c %s "$image")" = "67108864"
-+          test "$(stat -c %s "$disable_avb_image")" = "67108864"
-+          sha256sum --check --strict "${image}.sha256"
-+          sha256sum --check --strict "${disable_avb_image}.sha256"
-+          test -f "$product/vendor_boot.img"
-+          cmp -s "$image" "$product/vendor_boot.img"
-+          "$avbtool" verify_image --image "$image"
-+
-+          # AVB descriptors name the partition vendor_boot. Validate the
-+          # alternate image through that filename so avbtool hashes this image,
-+          # not the standard product/vendor_boot.img alias.
-+          avb_validation_dir="$(mktemp -d)"
-+          trap 'rm -rf "$avb_validation_dir"' EXIT
-+          ln -s "$disable_avb_image" "$avb_validation_dir/vendor_boot.img"
-+          "$avbtool" verify_image --image "$avb_validation_dir/vendor_boot.img"
-+
-+      - name: Save compiler cache
-+        if: ${{ success() && steps.ccache_restore.outputs.cache-hit != 'true' }}
-+        continue-on-error: true
-+        uses: actions/cache/save@v4
-+        with:
-+          path: ${{ env.CCACHE_DIR }}
-+          key: orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-${{ github.sha }}
- 
--      - name: Collect artifacts
--        if: always()
-+      - name: Collect release artifact
-         shell: bash
-+        env:
-+          FIRMWARE_BASELINE: ${{ steps.metadata.outputs.firmware_baseline }}
-+          IMAGE_NAME: ${{ steps.metadata.outputs.image_name }}
-+          DISABLE_AVB_IMAGE_NAME: ${{ steps.metadata.outputs.disable_avb_image_name }}
-         run: |
-+          set -euo pipefail
-+          product="$ORANGEFOX_TOP/out/target/product/rodin"
-+          image="$product/$IMAGE_NAME"
-+          disable_avb_image="$product/$DISABLE_AVB_IMAGE_NAME"
-+
-+          rm -rf "$GITHUB_WORKSPACE/artifacts"
-           mkdir -p "$GITHUB_WORKSPACE/artifacts"
--          PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
--
--          if [ -d "$PRODUCT" ]; then
--            find "$PRODUCT" \
--              -maxdepth 1 \
--              -type f \
--              \( -name "*.img" -o -name "*.zip" -o -name "*.txt" \) \
--              -exec cp -v {} "$GITHUB_WORKSPACE/artifacts/" \;
--          fi
-+          cp -fp "$image" "$GITHUB_WORKSPACE/artifacts/$IMAGE_NAME"
-+          cp -fp "$disable_avb_image" "$GITHUB_WORKSPACE/artifacts/$DISABLE_AVB_IMAGE_NAME"
-+          (
-+            cd "$GITHUB_WORKSPACE/artifacts"
-+            sha256sum "$IMAGE_NAME" > "${IMAGE_NAME}.sha256"
-+            sha256sum "$DISABLE_AVB_IMAGE_NAME" > "${DISABLE_AVB_IMAGE_NAME}.sha256"
-+          )
- 
--          cp -v "$GITHUB_WORKSPACE/orangefox-build.log" "$GITHUB_WORKSPACE/artifacts/" || true
--          cp -v "$GITHUB_WORKSPACE/vendor_boot_patched_info.txt" "$GITHUB_WORKSPACE/artifacts/" || true
--          cp -v "$GITHUB_WORKSPACE/product_files.txt" "$GITHUB_WORKSPACE/artifacts/" || true
--          cp -v "$GITHUB_WORKSPACE/recovery_cpio_path.txt" "$GITHUB_WORKSPACE/artifacts/" || true
-+          cat > "$GITHUB_WORKSPACE/artifacts/build-info-${RODIN_FIRMWARE_VARIANT}.md" <<EOF
-+          Automated OrangeFox ${RODIN_FIRMWARE_VARIANT} build for rodin.
- 
--      - name: Upload artifacts
--        if: always()
-+          - Device-tree commit: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
-+          - OrangeFox branch: ${ORANGEFOX_BRANCH}
-+          - Firmware profile: ${FIRMWARE_BASELINE}
-+          - GitHub run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-+
-+          This artifact contains validated standard and disable-avb system-compatible vendor_boot images.
-+          EOF
-+
-+      - name: Upload release artifact
-         uses: actions/upload-artifact@v4
-         with:
--          name: orangefox-rodin
-+          name: ${{ steps.metadata.outputs.artifact_name }}
-           path: artifacts
-+          if-no-files-found: error
-+          retention-days: 30
-+
-+      - name: Upload build diagnostics
-+        if: always()
-+        uses: actions/upload-artifact@v4
-+        with:
-+          name: orangefox-rodin-logs-${{ matrix.firmware_variant }}-${{ github.run_id }}-${{ github.run_attempt }}
-+          path: |
-+            orangefox-build.log
-+            OrangeFox/out/logs
-           if-no-files-found: warn
-+          retention-days: 14
-+
-+      - name: Clean build worktree
-+        if: always()
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          rm -rf "$ORANGEFOX_TOP" \
-+            "$GITHUB_WORKSPACE/ofox-sync" \
-+            "$GITHUB_WORKSPACE/pinned-manifest" \
-+            "$GITHUB_WORKSPACE/artifacts"
-+          rm -f "$GITHUB_WORKSPACE/ci-gitconfig" \
-+            "$GITHUB_WORKSPACE/orangefox-build.log"
-+
-+  release:
-+    if: ${{ needs.plan.outputs.full_release == 'true' && needs.build.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
-+    needs: [plan, build]
-+    runs-on: ubuntu-24.04
-+    timeout-minutes: 30
-+    permissions:
-+      contents: write
-+
-+    steps:
-+      - name: Download release artifacts
-+        uses: actions/download-artifact@v4
-+        with:
-+          pattern: orangefox-rodin-release-*-${{ github.run_id }}-${{ github.run_attempt }}
-+          path: release-artifacts
-+          merge-multiple: true
-+
-+      - name: Verify images
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          cd release-artifacts
-+          for image in \
-+            OrangeFox-R12.0-Unofficial-rodin-system-compatible.img \
-+            OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img \
-+            OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img \
-+            OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img
-+          do
-+            test -f "${image}"
-+            test -f "${image}.sha256"
-+            sha256sum --check --strict "${image}.sha256"
-+          done
-+
-+      - name: Create prerelease
-+        shell: bash
-+        env:
-+          GH_TOKEN: ${{ github.token }}
-+          GH_REPO: ${{ github.repository }}
-+        run: |
-+          set -euo pipefail
-+          release_tag="rodin-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA::7}"
-+          notes="$GITHUB_WORKSPACE/release-notes.md"
-+          cat > "$notes" <<EOF
-+          Automated OrangeFox build for rodin.
-+
-+          - Device-tree commit: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
-+          - OrangeFox branch: ${ORANGEFOX_BRANCH}
-+          - CN firmware profile: OS3.0.303.0.WOJCNXM
-+          - Global firmware profile: OS3.0.301.0.WOJMIXM
-+          - GitHub run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-+
-+          This prerelease contains standard and disable-avb system-compatible vendor_boot images for both firmware profiles.
-+          EOF
-+
-+          gh release create "$release_tag" \
-+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img" \
-+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img.sha256" \
-+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img" \
-+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img.sha256" \
-+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img" \
-+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img.sha256" \
-+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img" \
-+            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img.sha256" \
-+            --repo "$GH_REPO" \
-+            --target "$GITHUB_SHA" \
-+            --title "OrangeFox rodin CI ${GITHUB_SHA::7}" \
-+            --notes-file "$notes" \
-+            --prerelease
 diff --git a/Android.bp b/Android.bp
 index 963844f..8aaa90d 100644
 --- a/Android.bp
@@ -2478,113 +1735,6 @@ index 0000000..3304a52
 + SOONG_CONFIG_twrpGlobalVars_tw_no_screen_timeout := $(TW_NO_SCREEN_TIMEOUT)
 + SOONG_CONFIG_twrpGlobalVars_tw_oem_build := $(TW_OEM_BUILD)
 + SOONG_CONFIG_twrpGlobalVars_tw_x_offset := $(TW_X_OFFSET)
-diff --git a/prebuilt/README.md b/prebuilt/README.md
-index 4ec9694..9a374a8 100644
---- a/prebuilt/README.md
-+++ b/prebuilt/README.md
-@@ -8,6 +8,8 @@ dump. Update all of them together when changing the firmware base.
- | `kernel` | kernel payload from `boot_a` | `55caa83bf1dd1ab5e34521f1faa18532a6110a065123577a1a62d80ee5178569` |
- | `dtb/mt6899-rodin.dtb` | DTB from `vendor_boot_a` | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
- | `dtbo.img` | direct copy of `dtbo_a` | `ccd008dc7336301b7cc6fab7b59400b3debd2866f055f085e61696dbc7c0f298` |
-+| `global/vendor_ramdisk00` | locally extracted type-1 platform fragment from Global OS3.0.301.0.WOJMIXM `vendor_boot.img` | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
-+| `global/modules/*.ko` | matching Global OS3.0.301.0.WOJMIXM `vendor_dlkm` modules | per-file checks in `verify-build-inputs.sh` |
- | `vendor_boot_stock.img` | direct copy of `vendor_boot_a` | `499bb470719b790baf90f8b49a0340e09b7ed983f3508736a86a6d1e9b503f47` |
- | `vendor_ramdisk00` | platform fragment from `vendor_boot_a` | `192977d50a121f7a5ddfab0212488ef0dbb0326cad802ce9d664649967a9845c` |
- 
-@@ -20,3 +22,30 @@ first-stage runtime, SELinux data, fstab, firmware, and all 244 stock modules
- required by normal Android boot. Both generated fragments use LZ4. The supplied
- kernel advertises zstd support, but a real-device zstd test failed before ADB
- became available.
-+
-+The retained type-1 platform fragment also supplies the stock
-+`android.hardware.boot-service.mtk_recovery` AIDL BootControl binary and its
-+VINTF fragment. OrangeFox replaces only its stock init rc with a recovery rc
-+that preloads `librodin_libcxx_compat.so`; this keeps `bootctl` on the stock
-+AIDL path instead of falling back to the legacy HIDL UFS boot-region code.
-+
-+The default build profile is `cn`, which uses `vendor_ramdisk00`. Global
-+OS3.0.301.0.WOJMIXM must instead use `global/vendor_ramdisk00`; select it with
-+`RODIN_FIRMWARE_VARIANT=global`. The Global profile changes the retained type-1
-+platform fragment and replaces the seven Recovery-only touch, haptic, and eSE
-+modules from `global/modules/` before the recovery fragment is packed. Its DTB,
-+fstab, init, SELinux data, and stock recovery fragment were verified identical
-+to the CN base, so the remaining OrangeFox recovery resources stay shared.
-+
-+The textual device-tree patch deliberately does not embed the 29 MiB Global
-+fragment. Populate it from the matching full firmware package before using the
-+Global profile:
-+
-+```bash
-+device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
-+  /path/to/rodin_global_images_OS3.0.301.0.WOJMIXM_16.0/images/vendor_boot.img
-+```
-+
-+The importer accepts only the verified 64 MiB Global `vendor_boot.img` and
-+checks its hash, extracted type-1 fragment, and DTB before atomically replacing
-+`global/vendor_ramdisk00`.
-diff --git a/prebuilt/global/modules/focaltech_touch_rodin.ko b/prebuilt/global/modules/focaltech_touch_rodin.ko
-new file mode 100644
-index 0000000..402320f
---- /dev/null
-+++ b/prebuilt/global/modules/focaltech_touch_rodin.ko
-@@ -0,0 +1,3 @@
-+version https://git-lfs.github.com/spec/v1
-+oid sha256:87c41bce1aa64d855b685c5105ed177fe499968d44b802b48d7bd620697fe9da
-+size 744224
-diff --git a/prebuilt/global/modules/goodix_core_rodin.ko b/prebuilt/global/modules/goodix_core_rodin.ko
-new file mode 100644
-index 0000000..75c8378
---- /dev/null
-+++ b/prebuilt/global/modules/goodix_core_rodin.ko
-@@ -0,0 +1,3 @@
-+version https://git-lfs.github.com/spec/v1
-+oid sha256:c0e54ace6d081d949db7b900b0f10f890b7bf9e5eb763878f3c6874b806178d7
-+size 529640
-diff --git a/prebuilt/global/modules/nxp_i2c.ko b/prebuilt/global/modules/nxp_i2c.ko
-new file mode 100644
-index 0000000..eb687da
---- /dev/null
-+++ b/prebuilt/global/modules/nxp_i2c.ko
-@@ -0,0 +1,3 @@
-+version https://git-lfs.github.com/spec/v1
-+oid sha256:8a8ebd267c2715d3efd9dea4da79a63dcc061ff3a0edbdd14a52d947b4b3d7be
-+size 59896
-diff --git a/prebuilt/global/modules/p73.ko b/prebuilt/global/modules/p73.ko
-new file mode 100644
-index 0000000..5a2d780
---- /dev/null
-+++ b/prebuilt/global/modules/p73.ko
-@@ -0,0 +1,3 @@
-+version https://git-lfs.github.com/spec/v1
-+oid sha256:712cbc4503a2906ca828b1a86add1b5044c3eb892eaeb9c1bbd99450e12fb9a0
-+size 36528
-diff --git a/prebuilt/global/modules/scp.ko b/prebuilt/global/modules/scp.ko
-new file mode 100644
-index 0000000..edbb5a1
---- /dev/null
-+++ b/prebuilt/global/modules/scp.ko
-@@ -0,0 +1,3 @@
-+version https://git-lfs.github.com/spec/v1
-+oid sha256:b23492d891d88afcb00637a49b19b5fa460e2ee2c297d7436dd2ada22cffcd17
-+size 474640
-diff --git a/prebuilt/global/modules/si_haptic.ko b/prebuilt/global/modules/si_haptic.ko
-new file mode 100644
-index 0000000..06cab7d
---- /dev/null
-+++ b/prebuilt/global/modules/si_haptic.ko
-@@ -0,0 +1,3 @@
-+version https://git-lfs.github.com/spec/v1
-+oid sha256:e48b06dc688f5eae1b5568587376aea215b2ae9bb8310867e33df563e652c5ad
-+size 222176
-diff --git a/prebuilt/global/modules/xiaomi_touch_rodin.ko b/prebuilt/global/modules/xiaomi_touch_rodin.ko
-new file mode 100644
-index 0000000..bca6502
---- /dev/null
-+++ b/prebuilt/global/modules/xiaomi_touch_rodin.ko
-@@ -0,0 +1,3 @@
-+version https://git-lfs.github.com/spec/v1
-+oid sha256:e3532ef88d039eddf35c6d067c9d6be3161972182ffd9c0514ada6fc6291035b
-+size 210064
 diff --git a/recovery/root/init.recovery.bootctl.rc b/recovery/root/init.recovery.bootctl.rc
 new file mode 100644
 index 0000000..0d7e548
@@ -3607,7 +2757,7 @@ index d28fd7e..367bdb3 100644
 +设备树中的 `.github/workflows/build.yml` 使用 GitHub 托管的
 +`ubuntu-24.04`，不需要自行注册 `self-hosted` Runner。流程会在同步源码前
 +删除该临时 VM 上不参与构建的 Android SDK、语言工具缓存、浏览器和 Docker
-+层，然后安装构建依赖、从 Git LFS 拉取 `prebuilt/` 输入，并补足至少 12 GiB
++层，然后安装构建依赖、从普通 Git checkout 取得 `prebuilt/` 输入，并补足至少 12 GiB
 +swap。CI 只补足缺少的 swap 并为 header 预留余量，不会丢弃托管镜像已有的
 +swap。
 +
@@ -3823,165 +2973,6 @@ index d28fd7e..367bdb3 100644
  
  ## 11. 安全刷写与回退
  
-diff --git a/docs/DEVICE_TREE_PATCHES_CN.md b/docs/DEVICE_TREE_PATCHES_CN.md
-new file mode 100644
-index 0000000..4dbdced
---- /dev/null
-+++ b/docs/DEVICE_TREE_PATCHES_CN.md
-@@ -0,0 +1,153 @@
-+# rodin 设备树补丁说明
-+
-+## 范围
-+
-+`patches/rodin-fbe-global.patch` 是针对本仓库初始 rodin 设备树快照的文本补丁。它补齐了 FBE 所需的 recovery 依赖和 Global 固件构建 profile；不替换 OrangeFox 共享源码 patch，也不携带任何 firmware blob。
-+
-+补丁涉及：
-+
-+- `Android.bp`：将 Android 15 vendor 的 secure-element 与 OMAPI NDK 预编译库改为 recovery 专用模块名，保留 Android 16 构建图中的 AIDL 生成头文件，并让 `rodin_omapi_bridge` 显式链接 `librodin_libcxx_compat`。
-+- `recovery/root/init.recovery.keymint.rc`：为 OMAPI bridge 设置 vendor/system 运行时库搜索路径和 libc++ compatibility preload；在 `tee-supplicant` 就绪后并行启动 KeyMint、secure-element 与 NXP Weaver，不再以 bridge ready 属性阻塞 Weaver。
-+- `BoardConfig.mk`、`recovery/root/init.recovery.bootctl.rc` 与 post-build repacker：OrangeFox 和 ROM updater 均使用 stock MediaTek AIDL BootControl；重打包器保留 binary，并将其 device VINTF fragment 放到 `/vendor/etc/vintf/manifest`，避免 `/system` framework VINTF 解析失败而使 Keystore2 崩溃。recovery rc 通过 compatibility shim 启动该服务，避免旧 HIDL fallback 的 UFS boot-region ioctl 使 slot 切换失败。
-+- `BoardConfig.mk`：rodin 不启用 TWRP 的通用 APEX loop loader（`TW_EXCLUDE_APEX := true`）。
-+  Recovery 的 KeyMint/Weaver/FBE 链路不依赖 system APEX；跳过它可避免 Android 16 APEX
-+  的失败 loop 绑定残留，并且不修改系统内的 APEX 文件或正常 Android 启动路径。
-+- `tools/build-system-compatible-vendor-boot.sh`：增加 `RODIN_FIRMWARE_VARIANT=cn|global`，使最终镜像保留与目标系统相匹配的 type-1 platform ramdisk。
-+- `BoardConfig.mk`、`patches/orangefox-vendor-twrp.patch` 与共享 Recovery patch：CN 保持原有
-+  atomic DRM 的完整 teardown/rebuild；Global 保留相同的 blanktimer/锁屏状态机，但首次完整 setup
-+  后锁屏只对 CRTC 提交 `ACTIVE=0`，不撤销 connector、mode 或 plane binding；唤醒时在保留
-+  这些绑定的前提下重新提交完整 mode/connector/plane 状态，并将扫描面切换到备用 framebuffer。
-+  切换前会复制上一帧，避免 `gui_forceRender()` 前出现未初始化画面；该 framebuffer handoff 让
-+  MTK atomic driver 观察到真实 plane 更新并触发面板恢复。该编译开关经
-+  `vendor/twrp` Soong 显式传给 `libminuitwrp`；仅在 Recovery 退出时完整 teardown 后释放
-+  mode/FB 资源，`TW_NO_SCREEN_BLANK` 仍禁止使用。
-+- `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，先拉取 Git LFS blob，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。
-+- 构建前检查、文件哈希清单和构建文档。
-+
-+这份补丁解决三个已定位的问题：原先 Soong 会把设备树中 Android 15 预编译 NDK 库与 Android 16 AIDL 生成模块混淆，导致 recovery 依赖解析失败；运行时的 bridge 则因找不到 `/vendor/lib64` 内的 NDK 库而无法启动，使 Weaver 被错误的 ready gate 无限阻塞；旧 HIDL BootControl fallback 在 rodin 上会使 UFS boot-region 设置失败并导致 slot 切换失败。它们分别影响可编译性、FBE synthetic-password 流程和 Virtual A/B ROM 更新后的 slot 处理。
-+
-+## OrangeFox 共享 Recovery patch
-+
-+`patches/orangefox-recovery.patch` 由 `tools/apply-orangefox-patches.sh` 应用于 pinned
-+`bootable/recovery`。其中的 Virtual A/B 修复保留第一轮对当前槽位
-+`system_a`、`vendor_a` 等逻辑分区和 `-cow` 的精确清理；仅在后续兜底扫描中跳过
-+`Super_Partition_List` 中的无槽位 mapper alias，例如
-+`/dev/block/mapper/vendor -> vendor_a`。
-+
-+这些 alias 由 Recovery 的 image-flashing 兼容逻辑建立，不是第二个可删除的逻辑分区。
-+因此修复不会关闭 `Check_Pending_Merges()`，也不会绕过 Virtual A/B 的 snapshot merge
-+安全检查。构建后若 Format Data 日志出现
-+`skipping logical partition alias: vendor`，说明已命中该保护；若仍出现
-+`removing dynamic partition: vendor`，刷入的仍是旧镜像或共享 patch 未应用。
-+
-+rodin 的 `mi_ext` 是另一个需要保留 fstab 原始分区名的逻辑分区：它挂载到
-+`/mnt/vendor/mi_ext`，但逻辑分区名是 `mi_ext`，不是由挂载路径去掉 `/` 后得到的名称。
-+共享 patch 会保存 v2 fstab 第一列并用于 mapper 创建和拆除；Recovery 专用 fstab 则排除
-+Android init 专用的 `ro,bind` 和 `overlay` 行。这样不会把 `/mi_ext` 误解析为文件系统，也
-+不会在 Format Data / pending-merge 路径上错误处理 `mi_ext_b`。
-+
-+`persist` 由 stock KeyMint init 路径以 `ro,noload` 挂载到 `/mnt/vendor/persist`。设备树
-+在 Recovery 根目录创建 `/persist` 的只读 bind alias，`twrp.flags` 同样固定为
-+`ro,noload`；共享 patch 因此只从该路径读取早期 OrangeFox 设置，而不会回放 journal 或写入
-+安全存储。不得将其改成普通可写的 `/persist` fstab 项。
-+
-+FBE 已解密后的 `userdata` mapper 与动态分区不是同一类对象，不能由
-+`Unmap_Super_Devices()` 的兜底扫描删除。rodin 在 `BoardConfig.mk` 启用
-+`OF_USE_DMCTL := 1`，将 `dmctl` 放入 Recovery；共享 patch 只在确认格式化 `/data` 时
-+删除 `/dev/block/mapper/userdata`。命令失败或节点在最多一秒后仍存在时会终止格式化，
-+不会继续向仍被映射占用的物理 userdata 块设备执行 `make_f2fs`。
-+
-+共享 patch 还实现了 rodin 单 Type-C 口的 USB OTG 状态机。此机型在 host 尚未被请求时
-+不会打开 `otg_enable` 供电，因此不能以自动 Type-C source/partner 检测作为入口。用户在
-+“挂载”页点 USB 浮动按钮后，状态机先把 `typec/port0/preferred_role` 设为 `source`，再将
-+`sys.usb.config` 设为 `none`、启用 `otg_enable`、通过 `vbus_switch` 打开 stock DTB 中的
-+`usb-otg-vbus` regulator，并把 `11201000.usb0` role switch 置为
-+`host`；此时再于二十秒内插入 U 盘，按钮会变为 X，可显式停止。这避免 stock 的 sink
-+偏好把被动 OTG 转接器错误协商为 `Attached.SNK`。随后只接受 `/sys/block` 中解析路径包含
-+`/usb` 的 SCSI 盘，故内部 UFS `sda`、`sdb`、`sdc` 不会被误挂载。超时未枚举、按 X 或
-+介质拔出时，状态机均会恢复 `device` role、之前的 MTP 状态和 sink 偏好；host 期间 ADB
-+断开属于端口角色切换的预期行为。状态机绝不在 host 模式读取 role-switch 的 `role` 文件，
-+避免这个内核上可能无限阻塞的 sysfs read。
-+
-+CN 运行时进一步证明 stock DTB 的 `xhci0@11200000` 带有
-+`mediatek,usb-offload = <0x15b>`。该属性会令 MTU3 等待 Android USB audio offload
-+provider；Recovery 中 provider 及其音频/基带依赖均未运行，因此 source 协商成功后仍会出现
-+`offload not ready`，不会注册 USB host bus。`tools/patch-vendor-boot-dtb.py` 保留 MTK
-+64-byte wrapper 与所有其他 DTB 节点，只从临时 inner FDT 删除该属性并同步 wrapper 的 DTB
-+和总长度。`build-system-compatible-vendor-boot.sh` 只将这份临时 DTB 写入标准和
-+disable-AVB 成品，绝不改写 `prebuilt/dtb/mt6899-rodin.dtb`。这避免将 ABI 相关的
-+`usb_offload.ko`、音频和基带模块加入 Recovery。
-+
-+本仓库固定了 `relink_libraries` 对 `libprocessgroup_setup.so` 的一个增量构建问题。
-+原规则把 `TARGET_RECOVERY_ROOT_OUT/system/lib64` 同时作为来源和目标；当恢复目录被清理后
-+重建时，可能生成 ELF 大小正确但内容全零的文件。Recovery 的二阶段 `/system/bin/init`
-+会在 OrangeFox 启动前加载该库，结果触发 `Attempted to kill init` kernel panic。共享 patch
-+改从 `TARGET_OUT_SHARED_LIBRARIES` 的已链接库复制；post-build repacker 还会解压 recovery
-+fragment 并验证该库以 `7f 45 4c 46` 开头。检查失败时不会替换最终的
-+`*-system-compatible.img`。
-+
-+## 应用
-+
-+先保存完整设备树和现有工作，再在 OrangeFox 源码根目录执行。补丁文件必须在目标设备树外部，因为应用前目标树中尚不存在该文件。
-+
-+```bash
-+PATCH=/path/to/rodin-fbe-global.patch
-+patch -d device/xiaomi/rodin -p1 --dry-run < "$PATCH"
-+patch -d device/xiaomi/rodin -p1 < "$PATCH"
-+```
-+
-+只对与本项目初始快照相同的设备树直接应用。若 `--dry-run` 有上下文冲突，不要使用 `.rej` 继续构建；先按各文件的功能块人工 rebase，并重新运行完整预检。
-+
-+应用后仍按常规方式执行：
-+
-+```bash
-+device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
-+```
-+
-+该脚本继续负责 `build/make`、`vendor/twrp` 和 `bootable/recovery` 的三个 Git patch；`rodin-fbe-global.patch` 只修改设备树，不能由该脚本对非 Git 设备目录自动应用。
-+
-+## Global 固件输入
-+
-+Global OS3.0.301.0.WOJMIXM 的 244 个 type-1 platform 内核模块与 CN OS3.0.303.0.WOJCNXM 不同。两者 DTB、fstab、first-stage init、SELinux 数据和 type-2 stock recovery fragment 相同，但 type-1 fragment 不能交叉使用。
-+
-+补丁不包含 29,235,080 字节的 `prebuilt/global/vendor_ramdisk00`。从完整 Global 固件包导入：
-+
-+```bash
-+device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
-+  /path/to/rodin_global_images_OS3.0.301.0.WOJMIXM_16.0/images/vendor_boot.img
-+```
-+
-+导入器固定校验以下值，失败时不会覆盖现有输入：
-+
-+| 项目 | 值 |
-+| --- | --- |
-+| Global `vendor_boot.img` 大小 | `67108864` |
-+| Global `vendor_boot.img` SHA-256 | `72b8ae7637af1924de8312855790de91f99abbc9c8c8ab6003ddce14abc4d956` |
-+| type-1 fragment 大小 | `29235080` |
-+| type-1 fragment SHA-256 | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
-+| DTB SHA-256 | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
-+
-+`prebuilt/global/modules/` 的七个 6.6.89 Recovery-only 模块通过 Git LFS 保存。文本 patch
-+只包含它们的 LFS pointer，不包含模块字节；推送设备树前必须把实际模块一并加入并上传 LFS，
-+否则 GitHub Actions 的 `git lfs pull` 无法取得 Global 构建输入：
-+
-+```bash
-+git add .gitattributes prebuilt/global/modules/ prebuilt/README.md
-+git lfs status
-+```
-+
-+然后使用：
-+
-+```bash
-+RODIN_FIRMWARE_VARIANT=global OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
-+  device/xiaomi/rodin/build-lowmem.sh vendorbootimage
-+```
-+
-+CN 3.0.303 默认不设置 `RODIN_FIRMWARE_VARIANT`。两个 profile 都必须先通过：
-+
-+```bash
-+RODIN_FIRMWARE_VARIANT=global \
-+  device/xiaomi/rodin/tools/verify-build-inputs.sh "$PWD"
-+```
-+
-+Global 输出为 `OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img`，不能用于 CN；默认 CN 输出也不能用于 Global。repacker 会将最终 Recovery fragment 中的 7 个 ABI 相关模块与由 Global 输入和固定偏移 patch 生成的预期内容逐字节比较；若复用了 CN 的 recovery fragment，构建会停止而不会输出 Global 成品。
 diff --git a/docs/TROUBLESHOOTING_CN.md b/docs/TROUBLESHOOTING_CN.md
 index c3bc639..cb3cf8a 100644
 --- a/docs/TROUBLESHOOTING_CN.md
@@ -4472,3 +3463,809 @@ index 4550714..746ca81 100755
  if command -v file >/dev/null 2>&1 && [[ -f "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" ]]; then
      file "${DEVICE_DIR}/proprietary/fonts/MiSans.ttf" | grep -q 'TrueType Font data' || \
          fail "MiSans must use TrueType glyf outlines, not CFF"
+
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+new file mode 100644
+index 0000000..bac3b79
+--- /dev/null
++++ b/.github/workflows/build.yml
+@@ -0,0 +1,579 @@
++name: Build and publish OrangeFox rodin
++
++on:
++  push:
++    branches:
++      - main
++    paths-ignore:
++      - README.md
++      - docs/**
++      - .github/ISSUE_TEMPLATE/**
++  workflow_dispatch:
++    inputs:
++      publish:
++        description: Create a prerelease with vendor_boot images
++        required: true
++        default: true
++        type: boolean
++      firmware_variant:
++        description: Firmware profile to build; single-profile runs upload an artifact only
++        required: true
++        default: all
++        type: choice
++        options:
++          - all
++          - cn
++          - global
++
++permissions:
++  contents: read
++
++concurrency:
++  group: orangefox-rodin-${{ github.workflow }}-${{ github.ref }}
++  cancel-in-progress: true
++
++env:
++  ORANGEFOX_BRANCH: '14.1'
++  ORANGEFOX_SYNC_REVISION: '11e4406b2bd1de939a26b6bfbad7e371cc3b1fa7'
++  ORANGEFOX_TOP: ${{ github.workspace }}/OrangeFox
++  OF_BUILD_JOBS: '1'
++  CCACHE_DIR: ${{ github.workspace }}/.ccache
++  CCACHE_MAXSIZE: '3G'
++  CCACHE_CACHE_VERSION: '1'
++
++jobs:
++  plan:
++    runs-on: ubuntu-24.04
++    outputs:
++      variants: ${{ steps.variants.outputs.variants }}
++      full_release: ${{ steps.variants.outputs.full_release }}
++    steps:
++      - name: Select firmware profiles
++        id: variants
++        shell: bash
++        env:
++          REQUESTED_VARIANT: ${{ inputs.firmware_variant || 'all' }}
++        run: |
++          set -euo pipefail
++          case "${REQUESTED_VARIANT}" in
++            all)
++              echo 'variants=["cn","global"]' >> "$GITHUB_OUTPUT"
++              echo 'full_release=true' >> "$GITHUB_OUTPUT"
++              ;;
++            cn|global)
++              printf 'variants=["%s"]\n' "${REQUESTED_VARIANT}" >> "$GITHUB_OUTPUT"
++              echo 'full_release=false' >> "$GITHUB_OUTPUT"
++              ;;
++            *)
++              echo "Unsupported firmware_variant: ${REQUESTED_VARIANT}" >&2
++              exit 1
++              ;;
++          esac
++
++  build:
++    needs: plan
++    # Hosted image layouts vary. The first steps reclaim unrelated payloads,
++    # then verify the observed capacity before building at low concurrency.
++    runs-on: ubuntu-24.04
++    timeout-minutes: 360
++    strategy:
++      fail-fast: false
++      matrix:
++        firmware_variant: ${{ fromJSON(needs.plan.outputs.variants) }}
++    env:
++      RODIN_FIRMWARE_VARIANT: ${{ matrix.firmware_variant }}
++
++    steps:
++      - name: Check out device tree
++        uses: actions/checkout@v4
++        with:
++          fetch-depth: 1
++          path: device-tree
++
++      - name: Set build metadata
++        id: metadata
++        shell: bash
++        run: |
++          set -euo pipefail
++
++          case "${RODIN_FIRMWARE_VARIANT}" in
++            cn)
++              image_name="OrangeFox-R12.0-Unofficial-rodin-system-compatible.img"
++              disable_avb_image_name="OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img"
++              firmware_baseline="CN OS3.0.303.0.WOJCNXM"
++              ;;
++            global)
++              image_name="OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img"
++              disable_avb_image_name="OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img"
++              firmware_baseline="Global OS3.0.301.0.WOJMIXM"
++              ;;
++            *)
++              echo "Unsupported RODIN_FIRMWARE_VARIANT: ${RODIN_FIRMWARE_VARIANT}" >&2
++              exit 1
++              ;;
++          esac
++
++          echo "artifact_name=orangefox-rodin-release-${RODIN_FIRMWARE_VARIANT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
++          echo "firmware_baseline=${firmware_baseline}" >> "$GITHUB_OUTPUT"
++          echo "image_name=${image_name}" >> "$GITHUB_OUTPUT"
++          echo "disable_avb_image_name=${disable_avb_image_name}" >> "$GITHUB_OUTPUT"
++
++      - name: Remove stale build worktree
++        shell: bash
++        run: |
++          set -euo pipefail
++          rm -rf "$ORANGEFOX_TOP" \
++            "$GITHUB_WORKSPACE/ofox-sync" \
++            "$GITHUB_WORKSPACE/pinned-manifest" \
++            "$GITHUB_WORKSPACE/artifacts"
++          rm -f "$GITHUB_WORKSPACE/ci-gitconfig" \
++            "$GITHUB_WORKSPACE/orangefox-build.log"
++
++      # This is the cleaner used by Klee's known-working hosted workflow.
++      # It removes substantially more hosted-image payload than apt cleanup.
++      - name: Free disk space
++        uses: rokibhasansagar/slimhub_actions@main
++
++      - name: Install host packages
++        shell: bash
++        run: |
++          set -euo pipefail
++          sudo apt-get update
++          sudo apt-get install -y --no-install-recommends \
++            bc bison build-essential ccache cpio curl device-tree-compiler flex g++-multilib \
++            gcc-multilib git gnupg gperf imagemagick \
++            lib32ncurses-dev lib32readline-dev lib32z1-dev libelf-dev \
++            liblz4-tool libncurses-dev libsdl1.2-dev libssl-dev libxml2 \
++            libxml2-utils lz4 openjdk-17-jdk-headless pngcrush \
++            python-is-python3 python3 ripgrep rsync schedtool squashfs-tools \
++            unzip xsltproc zip zlib1g-dev
++          sudo apt-get clean
++          java_home="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
++          test -x "${java_home}/bin/java"
++          echo "JAVA_HOME=${java_home}" >> "$GITHUB_ENV"
++
++      - name: Verify checked-out device blobs
++        shell: bash
++        run: |
++          set -euo pipefail
++          test -s "$GITHUB_WORKSPACE/device-tree/prebuilt/vendor_boot_stock.img"
++          test "$(stat -c %s "$GITHUB_WORKSPACE/device-tree/prebuilt/vendor_boot_stock.img")" -eq 67108864
++          test "$(stat -c %s "$GITHUB_WORKSPACE/device-tree/prebuilt/global/vendor_ramdisk00")" -eq 29235080
++
++      - name: Setup build swap
++        shell: bash
++        run: |
++          set -euo pipefail
++          # setup-swap.sh creates only the missing capacity plus a header margin.
++          MIN_SWAP_GIB=12 \
++            bash "$GITHUB_WORKSPACE/device-tree/.github/scripts/setup-swap.sh"
++
++      - name: Check runner capacity
++        shell: bash
++        run: |
++          set -euo pipefail
++
++          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
++          # The source/out peak needs roughly 83 GiB. Reserve the 3 GiB
++          # compiler cache as well as the existing headroom before syncing.
++          required_kib=$((98 * 1024 * 1024))
++          if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
++            available_gib=$((available_kib / 1024 / 1024))
++            echo "::error::OrangeFox rodin needs at least 98 GiB free after hosted-image cleanup and swap setup; found ${available_gib} GiB."
++            echo "::error::Use a GitHub-hosted larger runner if this public standard runner image cannot meet the guard."
++            exit 1
++          fi
++
++          memory_kib="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
++          required_memory_kib=$((14 * 1024 * 1024))
++          if [[ -z "${memory_kib}" || "${memory_kib}" -lt "${required_memory_kib}" ]]; then
++            memory_gib=$((memory_kib / 1024 / 1024))
++            echo "::error::This workflow needs a public 16 GB-class GitHub-hosted runner; found ${memory_gib} GiB RAM."
++            exit 1
++          fi
++
++          df -h "$GITHUB_WORKSPACE"
++          free -h
++
++      - name: Restore compiler cache
++        id: ccache_restore
++        continue-on-error: true
++        uses: actions/cache/restore@v4
++        with:
++          path: ${{ env.CCACHE_DIR }}
++          key: orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-${{ github.sha }}
++          restore-keys: |
++            orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-
++
++      - name: Configure compiler cache
++        shell: bash
++        run: |
++          set -euo pipefail
++          command -v ccache
++          install -d "$CCACHE_DIR"
++          ccache -M "$CCACHE_MAXSIZE"
++          ccache -z
++          ccache -p
++
++      - name: Install repo tool
++        shell: bash
++        run: |
++          set -euo pipefail
++          install -d "$HOME/bin"
++          curl --fail --location --retry 5 --retry-all-errors \
++            https://storage.googleapis.com/git-repo-downloads/repo \
++            --output "$HOME/bin/repo"
++          chmod +x "$HOME/bin/repo"
++          echo "$HOME/bin" >> "$GITHUB_PATH"
++
++      - name: Sync OrangeFox sources
++        shell: bash
++        run: |
++          set -euo pipefail
++
++          manifest_repo="$GITHUB_WORKSPACE/pinned-manifest"
++          export GIT_CONFIG_GLOBAL="$GITHUB_WORKSPACE/ci-gitconfig"
++          mkdir -p "$manifest_repo"
++          cp "$GITHUB_WORKSPACE/device-tree/manifests/orangefox-fox_14.1-pinned.xml" \
++            "$manifest_repo/default.xml"
++          git -C "$manifest_repo" init --initial-branch=main --quiet
++          git -C "$manifest_repo" config user.name "OrangeFox CI"
++          git -C "$manifest_repo" config user.email "orangefox-ci@localhost"
++          git -C "$manifest_repo" add default.xml
++          git -C "$manifest_repo" commit --quiet -m "Pinned OrangeFox 14.1 manifest"
++          git config --global protocol.file.allow always
++          # GitLab occasionally resets long HTTP/2 fetches from hosted runners.
++          # Keep the transport reproducible and tolerate slow pack transfers.
++          # git config --global http.version HTTP/1.1
++          git config --global http.lowSpeedLimit 1
++          git config --global http.lowSpeedTime 600
++
++          mkdir -p "$ORANGEFOX_TOP"
++          cd "$ORANGEFOX_TOP"
++          repo init --depth=1 \
++            -u "file://${manifest_repo}" \
++            -b main \
++            -m default.xml
++
++          (
++            while sleep 60; do
++              date -u '+%Y-%m-%dT%H:%M:%SZ sync heartbeat'
++              df -h "$GITHUB_WORKSPACE"
++              free -h
++            done
++          ) &
++          heartbeat_pid=$!
++          trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
++
++          sync_succeeded=0
++          for sync_attempt in 1 2 3; do
++            if repo sync -c -j4 --retry-fetches=3 \
++              --no-clone-bundle --no-tags --optimized-fetch; then
++              sync_succeeded=1
++              break
++            fi
++
++            if [[ "$sync_attempt" -lt 3 ]]; then
++              delay_seconds=$((sync_attempt * 20))
++              echo "::warning::OrangeFox source sync attempt ${sync_attempt} failed; retrying in ${delay_seconds}s."
++              sleep "$delay_seconds"
++            fi
++          done
++          if [[ "$sync_succeeded" -ne 1 ]]; then
++            echo "::error::OrangeFox source sync failed after three complete attempts." >&2
++            exit 1
++          fi
++
++          kill "$heartbeat_pid" 2>/dev/null || true
++          trap - EXIT
++
++      - name: Apply OrangeFox setup patches
++        shell: bash
++        run: |
++          set -euo pipefail
++
++          sync_dir="$GITHUB_WORKSPACE/ofox-sync"
++          git clone --filter=blob:none https://gitlab.com/OrangeFox/sync.git "$sync_dir"
++          git -C "$sync_dir" checkout --detach "$ORANGEFOX_SYNC_REVISION"
++          test "$(git -C "$sync_dir" rev-parse HEAD)" = "$ORANGEFOX_SYNC_REVISION"
++
++          vold_patch="$sync_dir/patches/patch-vold-fox_14.1.diff"
++          test "$(sha256sum "$vold_patch" | awk '{print $1}')" = \
++            "29b4b0b387c3185a3dcc69f141a3c84969510547d13ed2de71eefa8423c57778"
++          if git -C "$ORANGEFOX_TOP/system/vold" apply --reverse --check "$vold_patch" 2>/dev/null; then
++            echo "OrangeFox system/vold patch is already applied"
++          else
++            git -C "$ORANGEFOX_TOP/system/vold" apply --check "$vold_patch"
++            git -C "$ORANGEFOX_TOP/system/vold" apply "$vold_patch"
++          fi
++
++      - name: Install rodin device tree
++        shell: bash
++        run: |
++          set -euo pipefail
++          mkdir -p "$ORANGEFOX_TOP/device/xiaomi/rodin"
++          rsync -a --delete \
++            --exclude .git \
++            --exclude images \
++            "$GITHUB_WORKSPACE/device-tree/" \
++            "$ORANGEFOX_TOP/device/xiaomi/rodin/"
++
++      - name: Apply source patches & verify
++        shell: bash
++        run: |
++          set -euo pipefail
++          "$ORANGEFOX_TOP/device/xiaomi/rodin/tools/apply-orangefox-patches.sh" \
++            "$ORANGEFOX_TOP"
++
++      - name: Drop sync metadata
++        shell: bash
++        run: |
++          set -euo pipefail
++          rm -rf "$ORANGEFOX_TOP/.repo" \
++            "$GITHUB_WORKSPACE/ofox-sync" \
++            "$GITHUB_WORKSPACE/pinned-manifest" \
++            "$GITHUB_WORKSPACE/ci-gitconfig"
++          df -h "$GITHUB_WORKSPACE"
++          free -h
++
++      - name: Check compilation capacity
++        shell: bash
++        run: |
++          set -euo pipefail
++
++          # slimhub reclaims about 138 GiB on the standard hosted image. A
++          # full pinned source checkout leaves about 45 GiB after .repo is
++          # removed; reserve the 3 GiB compiler cache and keep a 35 GiB floor
++          # for Soong before it starts writing out/.
++          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
++          required_kib=$((38 * 1024 * 1024))
++          if [[ -z "${available_kib}" || "${available_kib}" -lt "${required_kib}" ]]; then
++            available_gib=$((available_kib / 1024 / 1024))
++            echo "::error::OrangeFox rodin needs at least 38 GiB free after .repo cleanup; found ${available_gib} GiB."
++            exit 1
++          fi
++
++          du -sh "$ORANGEFOX_TOP"
++          df -h "$GITHUB_WORKSPACE"
++
++      - name: Build vendor_boot image
++        shell: bash
++        working-directory: ${{ env.ORANGEFOX_TOP }}
++        env:
++          ALLOW_MISSING_DEPENDENCIES: 'true'
++          FOX_BUILD_DEVICE: rodin
++          FOX_AB_DEVICE: '1'
++          FOX_VIRTUAL_AB_DEVICE: '1'
++          OF_FORCE_PREBUILT_KERNEL: '1'
++          OF_LOW_MEMORY_BUILD: '1'
++          GOMEMLIMIT: '3GiB'
++          GOGC: '20'
++          _JAVA_OPTIONS: '-Xmx3g'
++          USE_CCACHE: '1'
++          CCACHE_EXEC: /usr/bin/ccache
++          CCACHE_COMPILERCHECK: content
++          CCACHE_COMPRESS: 'true'
++        run: |
++          set -euo pipefail
++          build_jobs="$(nproc)"
++          export OF_BUILD_JOBS="$build_jobs"
++          export NINJA_ARGS="-j${build_jobs} -l${build_jobs}"
++          export SOONG_UI_NINJA_ARGS="$NINJA_ARGS"
++          printf 'Using %s Ninja jobs\n' "$build_jobs"
++
++          (
++            while sleep 60; do
++              date -u '+%Y-%m-%dT%H:%M:%SZ build heartbeat'
++              df -h "$GITHUB_WORKSPACE"
++              free -h
++            done
++          ) &
++          heartbeat_pid=$!
++          trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
++
++          device/xiaomi/rodin/build-lowmem.sh vendorbootimage 2>&1 | \
++            tee "$GITHUB_WORKSPACE/orangefox-build.log"
++
++          kill "$heartbeat_pid" 2>/dev/null || true
++          trap - EXIT
++
++      - name: Report compiler cache
++        if: always()
++        shell: bash
++        run: |
++          set -euo pipefail
++          ccache -s
++          du -sh "$CCACHE_DIR"
++
++      - name: Validate release image
++        shell: bash
++        env:
++          IMAGE_NAME: ${{ steps.metadata.outputs.image_name }}
++          DISABLE_AVB_IMAGE_NAME: ${{ steps.metadata.outputs.disable_avb_image_name }}
++        run: |
++          set -euo pipefail
++          product="$ORANGEFOX_TOP/out/target/product/rodin"
++          image="$product/$IMAGE_NAME"
++          disable_avb_image="$product/$DISABLE_AVB_IMAGE_NAME"
++          avbtool="$ORANGEFOX_TOP/out/host/linux-x86/bin/avbtool"
++
++          test -f "$image"
++          test -f "${image}.sha256"
++          test -f "$disable_avb_image"
++          test -f "${disable_avb_image}.sha256"
++          test -x "$avbtool"
++          test "$(stat -c %s "$image")" = "67108864"
++          test "$(stat -c %s "$disable_avb_image")" = "67108864"
++          sha256sum --check --strict "${image}.sha256"
++          sha256sum --check --strict "${disable_avb_image}.sha256"
++          test -f "$product/vendor_boot.img"
++          cmp -s "$image" "$product/vendor_boot.img"
++          "$avbtool" verify_image --image "$image"
++
++          # AVB descriptors name the partition vendor_boot. Validate the
++          # alternate image through that filename so avbtool hashes this image,
++          # not the standard product/vendor_boot.img alias.
++          avb_validation_dir="$(mktemp -d)"
++          trap 'rm -rf "$avb_validation_dir"' EXIT
++          ln -s "$disable_avb_image" "$avb_validation_dir/vendor_boot.img"
++          "$avbtool" verify_image --image "$avb_validation_dir/vendor_boot.img"
++
++      - name: Save compiler cache
++        if: ${{ success() && steps.ccache_restore.outputs.cache-hit != 'true' }}
++        continue-on-error: true
++        uses: actions/cache/save@v4
++        with:
++          path: ${{ env.CCACHE_DIR }}
++          key: orangefox-rodin-ccache-${{ env.CCACHE_CACHE_VERSION }}-${{ runner.os }}-${{ matrix.firmware_variant }}-${{ env.ORANGEFOX_SYNC_REVISION }}-${{ github.sha }}
++
++      - name: Collect release artifact
++        shell: bash
++        env:
++          FIRMWARE_BASELINE: ${{ steps.metadata.outputs.firmware_baseline }}
++          IMAGE_NAME: ${{ steps.metadata.outputs.image_name }}
++          DISABLE_AVB_IMAGE_NAME: ${{ steps.metadata.outputs.disable_avb_image_name }}
++        run: |
++          set -euo pipefail
++          product="$ORANGEFOX_TOP/out/target/product/rodin"
++          image="$product/$IMAGE_NAME"
++          disable_avb_image="$product/$DISABLE_AVB_IMAGE_NAME"
++
++          rm -rf "$GITHUB_WORKSPACE/artifacts"
++          mkdir -p "$GITHUB_WORKSPACE/artifacts"
++          cp -fp "$image" "$GITHUB_WORKSPACE/artifacts/$IMAGE_NAME"
++          cp -fp "$disable_avb_image" "$GITHUB_WORKSPACE/artifacts/$DISABLE_AVB_IMAGE_NAME"
++          (
++            cd "$GITHUB_WORKSPACE/artifacts"
++            sha256sum "$IMAGE_NAME" > "${IMAGE_NAME}.sha256"
++            sha256sum "$DISABLE_AVB_IMAGE_NAME" > "${DISABLE_AVB_IMAGE_NAME}.sha256"
++          )
++
++          cat > "$GITHUB_WORKSPACE/artifacts/build-info-${RODIN_FIRMWARE_VARIANT}.md" <<EOF
++          Automated OrangeFox ${RODIN_FIRMWARE_VARIANT} build for rodin.
++
++          - Device-tree commit: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
++          - OrangeFox branch: ${ORANGEFOX_BRANCH}
++          - Firmware profile: ${FIRMWARE_BASELINE}
++          - GitHub run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
++
++          This artifact contains validated standard and disable-avb system-compatible vendor_boot images.
++          EOF
++
++      - name: Upload release artifact
++        uses: actions/upload-artifact@v4
++        with:
++          name: ${{ steps.metadata.outputs.artifact_name }}
++          path: artifacts
++          if-no-files-found: error
++          retention-days: 30
++
++      - name: Upload build diagnostics
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: orangefox-rodin-logs-${{ matrix.firmware_variant }}-${{ github.run_id }}-${{ github.run_attempt }}
++          path: |
++            orangefox-build.log
++            OrangeFox/out/logs
++          if-no-files-found: warn
++          retention-days: 14
++
++      - name: Clean build worktree
++        if: always()
++        shell: bash
++        run: |
++          set -euo pipefail
++          rm -rf "$ORANGEFOX_TOP" \
++            "$GITHUB_WORKSPACE/ofox-sync" \
++            "$GITHUB_WORKSPACE/pinned-manifest" \
++            "$GITHUB_WORKSPACE/artifacts"
++          rm -f "$GITHUB_WORKSPACE/ci-gitconfig" \
++            "$GITHUB_WORKSPACE/orangefox-build.log"
++
++  release:
++    if: ${{ needs.plan.outputs.full_release == 'true' && needs.build.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
++    needs: [plan, build]
++    runs-on: ubuntu-24.04
++    timeout-minutes: 30
++    permissions:
++      contents: write
++
++    steps:
++      - name: Download release artifacts
++        uses: actions/download-artifact@v4
++        with:
++          pattern: orangefox-rodin-release-*-${{ github.run_id }}-${{ github.run_attempt }}
++          path: release-artifacts
++          merge-multiple: true
++
++      - name: Verify images
++        shell: bash
++        run: |
++          set -euo pipefail
++          cd release-artifacts
++          for image in \
++            OrangeFox-R12.0-Unofficial-rodin-system-compatible.img \
++            OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img \
++            OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img \
++            OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img
++          do
++            test -f "${image}"
++            test -f "${image}.sha256"
++            sha256sum --check --strict "${image}.sha256"
++          done
++
++      - name: Create prerelease
++        shell: bash
++        env:
++          GH_TOKEN: ${{ github.token }}
++          GH_REPO: ${{ github.repository }}
++        run: |
++          set -euo pipefail
++          release_tag="rodin-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA::7}"
++          notes="$GITHUB_WORKSPACE/release-notes.md"
++          cat > "$notes" <<EOF
++          Automated OrangeFox build for rodin.
++
++          - Device-tree commit: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
++          - OrangeFox branch: ${ORANGEFOX_BRANCH}
++          - CN firmware profile: OS3.0.303.0.WOJCNXM
++          - Global firmware profile: OS3.0.301.0.WOJMIXM
++          - GitHub run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
++
++          This prerelease contains standard and disable-avb system-compatible vendor_boot images for both firmware profiles.
++          EOF
++
++          gh release create "$release_tag" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-system-compatible.img.sha256" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-disable-avb-system-compatible.img.sha256" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img.sha256" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img" \
++            "release-artifacts/OrangeFox-R12.0-Unofficial-rodin-global-disable-avb-system-compatible.img.sha256" \
++            --repo "$GH_REPO" \
++            --target "$GITHUB_SHA" \
++            --title "OrangeFox rodin CI ${GITHUB_SHA::7}" \
++            --notes-file "$notes" \
++            --prerelease
+diff --git a/docs/DEVICE_TREE_PATCHES_CN.md b/docs/DEVICE_TREE_PATCHES_CN.md
+new file mode 100644
+index 0000000..7b987db
+--- /dev/null
++++ b/docs/DEVICE_TREE_PATCHES_CN.md
+@@ -0,0 +1,153 @@
++# rodin 设备树补丁说明
++
++## 范围
++
++`patches/rodin-fbe-global.patch` 是针对本仓库初始 rodin 设备树快照的文本补丁。它补齐了 FBE 所需的 recovery 依赖和 Global 固件构建 profile；不替换 OrangeFox 共享源码 patch，也不携带任何 firmware blob。
++
++补丁涉及：
++
++- `Android.bp`：将 Android 15 vendor 的 secure-element 与 OMAPI NDK 预编译库改为 recovery 专用模块名，保留 Android 16 构建图中的 AIDL 生成头文件，并让 `rodin_omapi_bridge` 显式链接 `librodin_libcxx_compat`。
++- `recovery/root/init.recovery.keymint.rc`：为 OMAPI bridge 设置 vendor/system 运行时库搜索路径和 libc++ compatibility preload；在 `tee-supplicant` 就绪后并行启动 KeyMint、secure-element 与 NXP Weaver，不再以 bridge ready 属性阻塞 Weaver。
++- `BoardConfig.mk`、`recovery/root/init.recovery.bootctl.rc` 与 post-build repacker：OrangeFox 和 ROM updater 均使用 stock MediaTek AIDL BootControl；重打包器保留 binary，并将其 device VINTF fragment 放到 `/vendor/etc/vintf/manifest`，避免 `/system` framework VINTF 解析失败而使 Keystore2 崩溃。recovery rc 通过 compatibility shim 启动该服务，避免旧 HIDL fallback 的 UFS boot-region ioctl 使 slot 切换失败。
++- `BoardConfig.mk`：rodin 不启用 TWRP 的通用 APEX loop loader（`TW_EXCLUDE_APEX := true`）。
++  Recovery 的 KeyMint/Weaver/FBE 链路不依赖 system APEX；跳过它可避免 Android 16 APEX
++  的失败 loop 绑定残留，并且不修改系统内的 APEX 文件或正常 Android 启动路径。
++- `tools/build-system-compatible-vendor-boot.sh`：增加 `RODIN_FIRMWARE_VARIANT=cn|global`，使最终镜像保留与目标系统相匹配的 type-1 platform ramdisk。
++- `BoardConfig.mk`、`patches/orangefox-vendor-twrp.patch` 与共享 Recovery patch：CN 保持原有
++  atomic DRM 的完整 teardown/rebuild；Global 保留相同的 blanktimer/锁屏状态机，但首次完整 setup
++  后锁屏只对 CRTC 提交 `ACTIVE=0`，不撤销 connector、mode 或 plane binding；唤醒时在保留
++  这些绑定的前提下重新提交完整 mode/connector/plane 状态，并将扫描面切换到备用 framebuffer。
++  切换前会复制上一帧，避免 `gui_forceRender()` 前出现未初始化画面；该 framebuffer handoff 让
++  MTK atomic driver 观察到真实 plane 更新并触发面板恢复。该编译开关经
++  `vendor/twrp` Soong 显式传给 `libminuitwrp`；仅在 Recovery 退出时完整 teardown 后释放
++  mode/FB 资源，`TW_NO_SCREEN_BLANK` 仍禁止使用。
++- `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，从普通 Git checkout 读取固件文件，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。
++- 构建前检查、文件哈希清单和构建文档。
++
++这份补丁解决三个已定位的问题：原先 Soong 会把设备树中 Android 15 预编译 NDK 库与 Android 16 AIDL 生成模块混淆，导致 recovery 依赖解析失败；运行时的 bridge 则因找不到 `/vendor/lib64` 内的 NDK 库而无法启动，使 Weaver 被错误的 ready gate 无限阻塞；旧 HIDL BootControl fallback 在 rodin 上会使 UFS boot-region 设置失败并导致 slot 切换失败。它们分别影响可编译性、FBE synthetic-password 流程和 Virtual A/B ROM 更新后的 slot 处理。
++
++## OrangeFox 共享 Recovery patch
++
++`patches/orangefox-recovery.patch` 由 `tools/apply-orangefox-patches.sh` 应用于 pinned
++`bootable/recovery`。其中的 Virtual A/B 修复保留第一轮对当前槽位
++`system_a`、`vendor_a` 等逻辑分区和 `-cow` 的精确清理；仅在后续兜底扫描中跳过
++`Super_Partition_List` 中的无槽位 mapper alias，例如
++`/dev/block/mapper/vendor -> vendor_a`。
++
++这些 alias 由 Recovery 的 image-flashing 兼容逻辑建立，不是第二个可删除的逻辑分区。
++因此修复不会关闭 `Check_Pending_Merges()`，也不会绕过 Virtual A/B 的 snapshot merge
++安全检查。构建后若 Format Data 日志出现
++`skipping logical partition alias: vendor`，说明已命中该保护；若仍出现
++`removing dynamic partition: vendor`，刷入的仍是旧镜像或共享 patch 未应用。
++
++rodin 的 `mi_ext` 是另一个需要保留 fstab 原始分区名的逻辑分区：它挂载到
++`/mnt/vendor/mi_ext`，但逻辑分区名是 `mi_ext`，不是由挂载路径去掉 `/` 后得到的名称。
++共享 patch 会保存 v2 fstab 第一列并用于 mapper 创建和拆除；Recovery 专用 fstab 则排除
++Android init 专用的 `ro,bind` 和 `overlay` 行。这样不会把 `/mi_ext` 误解析为文件系统，也
++不会在 Format Data / pending-merge 路径上错误处理 `mi_ext_b`。
++
++`persist` 由 stock KeyMint init 路径以 `ro,noload` 挂载到 `/mnt/vendor/persist`。设备树
++在 Recovery 根目录创建 `/persist` 的只读 bind alias，`twrp.flags` 同样固定为
++`ro,noload`；共享 patch 因此只从该路径读取早期 OrangeFox 设置，而不会回放 journal 或写入
++安全存储。不得将其改成普通可写的 `/persist` fstab 项。
++
++FBE 已解密后的 `userdata` mapper 与动态分区不是同一类对象，不能由
++`Unmap_Super_Devices()` 的兜底扫描删除。rodin 在 `BoardConfig.mk` 启用
++`OF_USE_DMCTL := 1`，将 `dmctl` 放入 Recovery；共享 patch 只在确认格式化 `/data` 时
++删除 `/dev/block/mapper/userdata`。命令失败或节点在最多一秒后仍存在时会终止格式化，
++不会继续向仍被映射占用的物理 userdata 块设备执行 `make_f2fs`。
++
++共享 patch 还实现了 rodin 单 Type-C 口的 USB OTG 状态机。此机型在 host 尚未被请求时
++不会打开 `otg_enable` 供电，因此不能以自动 Type-C source/partner 检测作为入口。用户在
++“挂载”页点 USB 浮动按钮后，状态机先把 `typec/port0/preferred_role` 设为 `source`，再将
++`sys.usb.config` 设为 `none`、启用 `otg_enable`、通过 `vbus_switch` 打开 stock DTB 中的
++`usb-otg-vbus` regulator，并把 `11201000.usb0` role switch 置为
++`host`；此时再于二十秒内插入 U 盘，按钮会变为 X，可显式停止。这避免 stock 的 sink
++偏好把被动 OTG 转接器错误协商为 `Attached.SNK`。随后只接受 `/sys/block` 中解析路径包含
++`/usb` 的 SCSI 盘，故内部 UFS `sda`、`sdb`、`sdc` 不会被误挂载。超时未枚举、按 X 或
++介质拔出时，状态机均会恢复 `device` role、之前的 MTP 状态和 sink 偏好；host 期间 ADB
++断开属于端口角色切换的预期行为。状态机绝不在 host 模式读取 role-switch 的 `role` 文件，
++避免这个内核上可能无限阻塞的 sysfs read。
++
++CN 运行时进一步证明 stock DTB 的 `xhci0@11200000` 带有
++`mediatek,usb-offload = <0x15b>`。该属性会令 MTU3 等待 Android USB audio offload
++provider；Recovery 中 provider 及其音频/基带依赖均未运行，因此 source 协商成功后仍会出现
++`offload not ready`，不会注册 USB host bus。`tools/patch-vendor-boot-dtb.py` 保留 MTK
++64-byte wrapper 与所有其他 DTB 节点，只从临时 inner FDT 删除该属性并同步 wrapper 的 DTB
++和总长度。`build-system-compatible-vendor-boot.sh` 只将这份临时 DTB 写入标准和
++disable-AVB 成品，绝不改写 `prebuilt/dtb/mt6899-rodin.dtb`。这避免将 ABI 相关的
++`usb_offload.ko`、音频和基带模块加入 Recovery。
++
++本仓库固定了 `relink_libraries` 对 `libprocessgroup_setup.so` 的一个增量构建问题。
++原规则把 `TARGET_RECOVERY_ROOT_OUT/system/lib64` 同时作为来源和目标；当恢复目录被清理后
++重建时，可能生成 ELF 大小正确但内容全零的文件。Recovery 的二阶段 `/system/bin/init`
++会在 OrangeFox 启动前加载该库，结果触发 `Attempted to kill init` kernel panic。共享 patch
++改从 `TARGET_OUT_SHARED_LIBRARIES` 的已链接库复制；post-build repacker 还会解压 recovery
++fragment 并验证该库以 `7f 45 4c 46` 开头。检查失败时不会替换最终的
++`*-system-compatible.img`。
++
++## 应用
++
++先保存完整设备树和现有工作，再在 OrangeFox 源码根目录执行。补丁文件必须在目标设备树外部，因为应用前目标树中尚不存在该文件。
++
++```bash
++PATCH=/path/to/rodin-fbe-global.patch
++patch -d device/xiaomi/rodin -p1 --dry-run < "$PATCH"
++patch -d device/xiaomi/rodin -p1 < "$PATCH"
++```
++
++只对与本项目初始快照相同的设备树直接应用。若 `--dry-run` 有上下文冲突，不要使用 `.rej` 继续构建；先按各文件的功能块人工 rebase，并重新运行完整预检。
++
++应用后仍按常规方式执行：
++
++```bash
++device/xiaomi/rodin/tools/apply-orangefox-patches.sh "$PWD"
++```
++
++该脚本继续负责 `build/make`、`vendor/twrp` 和 `bootable/recovery` 的三个 Git patch；`rodin-fbe-global.patch` 只修改设备树，不能由该脚本对非 Git 设备目录自动应用。
++
++## Global 固件输入
++
++Global OS3.0.301.0.WOJMIXM 的 244 个 type-1 platform 内核模块与 CN OS3.0.303.0.WOJCNXM 不同。两者 DTB、fstab、first-stage init、SELinux 数据和 type-2 stock recovery fragment 相同，但 type-1 fragment 不能交叉使用。
++
++补丁不包含 29,235,080 字节的 `prebuilt/global/vendor_ramdisk00`。从完整 Global 固件包导入：
++
++```bash
++device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
++  /path/to/rodin_global_images_OS3.0.301.0.WOJMIXM_16.0/images/vendor_boot.img
++```
++
++导入器固定校验以下值，失败时不会覆盖现有输入：
++
++| 项目 | 值 |
++| --- | --- |
++| Global `vendor_boot.img` 大小 | `67108864` |
++| Global `vendor_boot.img` SHA-256 | `72b8ae7637af1924de8312855790de91f99abbc9c8c8ab6003ddce14abc4d956` |
++| type-1 fragment 大小 | `29235080` |
++| type-1 fragment SHA-256 | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
++| DTB SHA-256 | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
++
++`prebuilt/global/modules/` 的七个 6.6.89 Recovery-only 模块在本仓库中是普通 Git blob。
++`rodin-fbe-global.patch` 不再创建 LFS pointer，也不包含模块字节；若从初始设备树快照应用该
++补丁，需从本仓库复制这七个模块及 `prebuilt/global/vendor_ramdisk00` 后再预检：
++
++```bash
++cp -a /path/to/this-repo/prebuilt/global/modules/. device/xiaomi/rodin/prebuilt/global/modules/
++cp /path/to/this-repo/prebuilt/global/vendor_ramdisk00 device/xiaomi/rodin/prebuilt/global/
++```
++
++然后使用：
++
++```bash
++RODIN_FIRMWARE_VARIANT=global OF_BUILD_JOBS=16 GOMEMLIMIT=12GiB \
++  device/xiaomi/rodin/build-lowmem.sh vendorbootimage
++```
++
++CN 3.0.303 默认不设置 `RODIN_FIRMWARE_VARIANT`。两个 profile 都必须先通过：
++
++```bash
++RODIN_FIRMWARE_VARIANT=global \
++  device/xiaomi/rodin/tools/verify-build-inputs.sh "$PWD"
++```
++
++Global 输出为 `OrangeFox-R12.0-Unofficial-rodin-global-system-compatible.img`，不能用于 CN；默认 CN 输出也不能用于 Global。repacker 会将最终 Recovery fragment 中的 7 个 ABI 相关模块与由 Global 输入和固定偏移 patch 生成的预期内容逐字节比较；若复用了 CN 的 recovery fragment，构建会停止而不会输出 Global 成品。
+diff --git a/prebuilt/README.md b/prebuilt/README.md
+new file mode 100644
+index 0000000..47f7651
+--- /dev/null
++++ b/prebuilt/README.md
+@@ -0,0 +1,55 @@
++# Prebuilt firmware artifacts
++
++These files were extracted directly from the supplied `rodin_part` partition
++dump. Update all of them together when changing the firmware base.
++
++All files under `prebuilt/` are stored as ordinary Git blobs. Git LFS is not
++required for checkout or CI, and a pointer file must never be committed in
++place of a firmware artifact.
++
++| File | Source | SHA-256 |
++| --- | --- | --- |
++| `kernel` | kernel payload from `boot_a` | `55caa83bf1dd1ab5e34521f1faa18532a6110a065123577a1a62d80ee5178569` |
++| `dtb/mt6899-rodin.dtb` | DTB from `vendor_boot_a` | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
++| `dtbo.img` | direct copy of `dtbo_a` | `ccd008dc7336301b7cc6fab7b59400b3debd2866f055f085e61696dbc7c0f298` |
++| `global/vendor_ramdisk00` | locally extracted type-1 platform fragment from Global OS3.0.301.0.WOJMIXM `vendor_boot.img` | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
++| `global/modules/*.ko` | matching Global OS3.0.301.0.WOJMIXM `vendor_dlkm` modules | per-file checks in `verify-build-inputs.sh` |
++| `vendor_boot_stock.img` | direct copy of `vendor_boot_a` | `499bb470719b790baf90f8b49a0340e09b7ed983f3508736a86a6d1e9b503f47` |
++| `vendor_ramdisk00` | platform fragment from `vendor_boot_a` | `192977d50a121f7a5ddfab0212488ef0dbb0326cad802ce9d664649967a9845c` |
++
++Do not mix these files with artifacts from another firmware release. The
++system-compatible post-build step uses `vendor_ramdisk00` as an immutable
++source. It removes only the stock-recovery programs, services, graphics, and
++misplaced recovery HAL VINTF fragments that the type-2 OrangeFox fragment
++replaces. The generated type-1 fragment retains the byte-identical stock
++first-stage runtime, SELinux data, fstab, firmware, and all 244 stock modules
++required by normal Android boot. Both generated fragments use LZ4. The supplied
++kernel advertises zstd support, but a real-device zstd test failed before ADB
++became available.
++
++The retained type-1 platform fragment also supplies the stock
++`android.hardware.boot-service.mtk_recovery` AIDL BootControl binary and its
++VINTF fragment. OrangeFox replaces only its stock init rc with a recovery rc
++that preloads `librodin_libcxx_compat.so`; this keeps `bootctl` on the stock
++AIDL path instead of falling back to the legacy HIDL UFS boot-region code.
++
++The default build profile is `cn`, which uses `vendor_ramdisk00`. Global
++OS3.0.301.0.WOJMIXM must instead use `global/vendor_ramdisk00`; select it with
++`RODIN_FIRMWARE_VARIANT=global`. The Global profile changes the retained type-1
++platform fragment and replaces the seven Recovery-only touch, haptic, and eSE
++modules from `global/modules/` before the recovery fragment is packed. Its DTB,
++fstab, init, SELinux data, and stock recovery fragment were verified identical
++to the CN base, so the remaining OrangeFox recovery resources stay shared.
++
++The textual device-tree patch deliberately does not embed the 29 MiB Global
++fragment. Populate it from the matching full firmware package before using the
++Global profile:
++
++```bash
++device/xiaomi/rodin/tools/import-global-firmware-inputs.sh \
++  /path/to/rodin_global_images_OS3.0.301.0.WOJMIXM_16.0/images/vendor_boot.img
++```
++
++The importer accepts only the verified 64 MiB Global `vendor_boot.img` and
++checks its hash, extracted type-1 fragment, and DTB before atomically replacing
++`global/vendor_ramdisk00`.

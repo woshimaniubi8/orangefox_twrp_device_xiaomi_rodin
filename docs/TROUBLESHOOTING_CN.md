@@ -308,3 +308,25 @@ adb pull /sys/fs/pstore "$LOGDIR/pstore" || true
 ```
 
 记录测试镜像 SHA-256、当前槽位、系统版本、是否解密、是否存在 ADB，以及屏幕停在哪一层。没有这些信息时不要同时修改多个变量。
+
+## 16. fastbootd 模式主机看不到设备，但 Enable ADB 可用
+
+`adb devices` 和 `fastboot devices` 使用不同的 USB FunctionFS 接口。Enable ADB 能被主机识别，只能证明线缆与 ADB gadget 正常，不代表 fastbootd gadget 已绑定 UDC。
+
+当前设备树为 fastbootd 使用 `ro.recovery.usb.fastboot.pid`，并在 fastbootd 写好 FunctionFS 描述符后才绑定 UDC。不要删除 `sys.usb.ffs.ready` 门控，否则 UDC 可能早于 fastbootd 接口就绪而绑定失败。
+
+构建后进入 fastbootd，在主机分别运行：
+
+```bash
+fastboot --version
+fastboot devices -l
+lsusb -nn | grep -iE '18d1|2717'
+```
+
+若 `lsusb` 完全没有 rodin 设备，说明主机没有观察到 USB 枚举；由于 Enable ADB 已证明线缆可用，下一步应检查 fastbootd 下设备端 UDC/gadget 状态。若能看到 `18d1:4ee0` 但 `fastboot devices -l` 为空，USB 已枚举但 fastboot 尚未识别，记录 platform-tools 版本、USB 权限和 `lsusb -v` 的接口描述符后再区分设备接口与主机工具问题。Enable ADB 状态下可另行核对设备声明的 fastboot PID：
+
+```bash
+adb shell getprop ro.recovery.usb.fastboot.pid
+```
+
+不要在 fastbootd 模式下用 `adb devices` 判断其 USB 是否工作，也不要为了让 ADB 持续在线而同时启用 ADB 和 fastbootd gadget。

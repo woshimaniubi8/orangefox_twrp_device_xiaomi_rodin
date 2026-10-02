@@ -76,7 +76,7 @@ sudo apt install -y \
 设备树中的 `.github/workflows/build.yml` 使用 GitHub 托管的
 `ubuntu-24.04`，不需要自行注册 `self-hosted` Runner。流程会在同步源码前
 删除该临时 VM 上不参与构建的 Android SDK、语言工具缓存、浏览器和 Docker
-层，然后安装构建依赖、从 Git LFS 拉取 `prebuilt/` 输入，并补足至少 12 GiB
+层，然后安装构建依赖、从普通 Git checkout 取得 `prebuilt/` 输入，并补足至少 12 GiB
 swap。CI 只补足缺少的 swap 并为 header 预留余量，不会丢弃托管镜像已有的
 swap。
 

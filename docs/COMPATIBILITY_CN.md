@@ -26,6 +26,33 @@ rodin-OrangeFox-OS3.0.303.0-WOJCNXM-dual-touch-test.img
 
 界面中显示的“3.0.303”不足以确认兼容性，必须比较完整 vendor fingerprint、kernel ABI 和触摸控制器。
 
+## 只替换 `vendor_boot` 的边界
+
+本设备树的最终镜像不是把一个完整的 `vendor_boot.img` 原样刷回设备。构建脚本
+会从匹配固件的 type-1 platform ramdisk、DTB 和模块中重建 vendor boot，再合入
+编译出的 type-2 Recovery fragment；当前 CN/Global 输入分别是：
+
+```text
+prebuilt/vendor_ramdisk00
+prebuilt/global/vendor_ramdisk00
+prebuilt/dtb/mt6899-rodin.dtb
+prebuilt/global/modules/*.ko
+```
+
+因此仅替换 `prebuilt/vendor_boot_stock.img` 不能自动适配大多数系统版本：该文件
+主要用于输入校验和导入参考，repacker 实际不会从它推导新的 kernel ABI、
+`vendor_dlkm` 模块、触摸 HAL 或 FBE 安全组件。当前预检还会拒绝未登记的
+header、DTB、ramdisk、DTBO 和 SHA-256，绕过预检只会把旧 platform 与新系统
+混用，可能导致 first-stage 挂载失败、触摸/OTG 不工作、Recovery 重启或 FBE
+无法解密。
+
+要支持一个新的 OTA/地区，至少需要从同一版本重新提取 `boot`、`init_boot`、
+`vendor_boot`、`dtbo`、`vendor_dlkm`/`odm_dlkm` 及其模块元数据，并同步触摸
+HAL/配置、KeyMint/Gatekeeper/Weaver/secure-element、VINTF 和 TA。只有在
+DTB、first-stage fstab、kernel vermagic/符号 CRC、模块依赖和安全 HAL 全部证明
+二进制兼容时，才可以复用已有 Recovery fragment；这属于同一 profile 的小版本
+复用，不是一个通用 `vendor_boot` 覆盖方案。
+
 ## 2. disable-avb 变体
 
 每个固件基线会同时生成标准镜像和 `disable-avb` 镜像。例如 CN 基线为：
