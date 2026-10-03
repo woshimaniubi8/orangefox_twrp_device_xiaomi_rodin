@@ -81,7 +81,7 @@ check_file "${DEVICE_DIR}/manifests/orangefox-fox_14.1-pinned.xml"
 check_sha256 "${DEVICE_DIR}/patches/orangefox-build-make.patch" 5f2d3f43a4d78eee6d560a4a169df30fc95de6fa2ed294e3210e684a641a8329
 check_sha256 "${DEVICE_DIR}/patches/orangefox-vendor-twrp.patch" d845e7cc38d612fa838db94da6336820b48d2e4251e109ee7b4ef2f361d22158
 check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 59141a5f5f91f612caeb136c6f8626f0313dd593265d6ab49d987adc0c6390bd
-check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 02b97f92830443f56c9a92ceccef17e445dc7890ddd38d4109a0a11775a92e10
+check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 89b44cc54f6a0c70d7efef57b86b3eec1235267091f0d48f6c8b821368c3e6e1
 
 if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
     if ! python3 "${DEVICE_DIR}/tools/verify-source-manifest.py" "${TOP_DIR}" \
@@ -179,14 +179,24 @@ check_contains "${DEVICE_DIR}/BoardConfig.mk" \
     'TW_EXCLUDE_APEX := true' \
     "rodin must exclude the optional TWRP APEX loop loader"
 check_contains "${DEVICE_DIR}/recovery/root/init.recovery.usb.rc" \
-    'write /config/usb_gadget/g1/idProduct 0x${ro.recovery.usb.fastboot.pid}' \
-    "fastbootd USB product ID must use the configured recovery property"
-check_contains "${DEVICE_DIR}/recovery/root/init.recovery.usb.rc" \
-    'on property:sys.usb.ffs.ready=1 && property:sys.usb.config=fastboot && property:sys.usb.configfs=1' \
-    "fastbootd gadget must wait for its FunctionFS descriptors before binding UDC"
+    'write /sys/class/udc/${ro.boot.usbcontroller}/device/../mode peripheral' \
+    "MTK UDC must be placed in peripheral mode"
+if grep -qE '^[[:space:]]*(on property:sys\.usb\.|(mkdir|write|symlink) /config/usb_gadget|mount functionfs)' \
+        "${DEVICE_DIR}/recovery/root/init.recovery.usb.rc"; then
+    fail "device recovery USB rc duplicates the platform configfs/FunctionFS owner"
+fi
+check_contains "${TOP_DIR}/bootable/recovery/etc/init.rc" \
+    'on property:sys.usb.config=fastboot' \
+    "platform recovery init must own the fastbootd USB transition"
 check_contains "${DEVICE_DIR}/recovery/root/init.recovery.project.rc" \
     'setprop ro.recovery.usb.fastboot.pid 4EE0' \
     "recovery fastboot USB product ID is not configured"
+check_contains "${DEVICE_DIR}/tools/build-system-compatible-vendor-boot.sh" \
+    'recovery ramdisk still declares the unavailable AIDL Health service' \
+    "final vendor_boot repacker must reject the stale AIDL Health VINTF manifest"
+if [[ -e "${DEVICE_DIR}/recovery/root/vendor/etc/vintf/manifest/android.hardware.health-service.example.xml" ]]; then
+    fail "recovery declares an AIDL Health service that is not provided; fastbootd would block before USB initialization"
+fi
 check_contains "${DEVICE_DIR}/recovery/root/init.recovery.mt6899.rc" \
     'start vendor.boot-default' \
     "fastbootd BootControl service is not started during recovery boot"

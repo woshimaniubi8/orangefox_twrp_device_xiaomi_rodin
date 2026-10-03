@@ -70,7 +70,7 @@ c0bc22a0c7158cb92f9720f7d74f7e38861d98e7dac4c726e70da302f2a195c8  device/xiaomi/
 83ae9f0f252190f4e324171ae611d0aaf6cba5cca2638af2ac38f524969fc5c8  device/xiaomi/rodin/recovery/root/init.recovery.keymint.rc
 be8be557f3ba97b6125f9f2b9b545a1b9b48f3898260477de556c19c54b68c7a  device/xiaomi/rodin/recovery/root/init.recovery.mt6899.rc
 e9dde5655db30dcce1a8abf7a23c7db907790d791a625559a14257aad3323846  device/xiaomi/rodin/recovery/root/init.recovery.project.rc
-2a53d6de83d1194d7eb672ed18abfde6835254a3cb7cf6f94142909625efa1a4  device/xiaomi/rodin/recovery/root/init.recovery.usb.rc
+87d15b5108f9ddf0e0d8ad167d25e370420b61de74ade32e9eafb28fb3c06e18  device/xiaomi/rodin/recovery/root/init.recovery.usb.rc
 216fcf14fdb61c43faa8ecedcd4b42cf96d8dc8fb2bb4c63f1db3af9a1516736  device/xiaomi/rodin/recovery/root/lib/modules/8250_mtk.ko
 5f1a7246631f622e761c37a8d428e4a68e1ee8573c2b08437a586a1a7590d313  device/xiaomi/rodin/recovery/root/lib/modules/adapter_class.ko
 3e93b446b7268740509d96d52dc5d17c12ccbf416c078d11d06ab2d7a3e1727f  device/xiaomi/rodin/recovery/root/lib/modules/adsp.ko
@@ -339,7 +339,6 @@ e75201e0a0d2be1a5a13371a010b749ac6d66fe5dc2742fa4a0d13876d5e4312  device/xiaomi/
 d01d06cc43d3d6ef28f3bd4b2121967edb8bab0414e1cb7ffb5be9cb8525ee61  device/xiaomi/rodin/recovery/root/system/etc/vintf/manifest.xml
 3131029d0f2ee73c4dcb01429d0b8e46d8e1d3839216999dafa3eb6963441ddd  device/xiaomi/rodin/recovery/root/vendor/etc/ueventd.rc
 d609f782bf15bc90788b5eff8aabed303c3ae3aadf738c522e23646f61dfa29f  device/xiaomi/rodin/recovery/root/vendor/etc/vintf/manifest.xml
-692c541521eb21340da74569949cbcd168a1531ceafb2979470cccb3368be362  device/xiaomi/rodin/recovery/root/vendor/etc/vintf/manifest/android.hardware.health-service.example.xml
 ca14cfccc59f400bb11bf2bc0de0a94aab6d6d543e98521937fc9c7fe0f237c7  device/xiaomi/rodin/recovery/root/vendor/firmware/Conf_MultipleTest.ini
 ad3b0648dcd31b13a5106d2375695a6e2bf0bb0ac8a2b11f9ea005774349fc46  device/xiaomi/rodin/recovery/root/vendor/firmware/focaltech_ts_fw_rodin.bin
 94ef1ab0367eb815a941a5f85c29b13f2a4e3fea8e3a28da6a44065ee04a4056  device/xiaomi/rodin/recovery/root/vendor/firmware/goodix_cfg_group_rodin.bin

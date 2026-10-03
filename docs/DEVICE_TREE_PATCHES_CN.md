@@ -2,7 +2,7 @@
 
 ## 范围
 
-`patches/rodin-fbe-global.patch` 是针对本仓库初始 rodin 设备树快照的文本补丁。它补齐了 FBE 所需的 recovery 依赖和 Global 固件构建 profile；不替换 OrangeFox 共享源码 patch，也不携带任何 firmware blob。
+`patches/rodin-fbe-global.patch` 是针对本仓库初始 rodin 设备树快照的文本补丁。它补齐了 FBE 所需的 recovery 依赖和 Global 固件构建 profile；不替换 OrangeFox 共享源码 patch，也不携带任何 firmware blob。该引导补丁尚未包含下文的 fastbootd USB 修复；当前构建应使用本仓库的完整设备树，而不是只应用这份旧补丁。
 
 补丁涉及：
 
@@ -24,7 +24,12 @@
 - `.github/workflows/build.yml`：使用 GitHub 托管的 `ubuntu-24.04`，从普通 Git checkout 读取固件文件，再以 CN/Global 矩阵构建和发布四个经过 AVB 校验的镜像；同步 OrangeFox 源码时固定 HTTP/1.1，并对完整同步作有限重试。
 - 构建前检查、文件哈希清单和构建文档。
 
-这份补丁解决三个已定位的问题：原先 Soong 会把设备树中 Android 15 预编译 NDK 库与 Android 16 AIDL 生成模块混淆，导致 recovery 依赖解析失败；运行时的 bridge 则因找不到 `/vendor/lib64` 内的 NDK 库而无法启动，使 Weaver 被错误的 ready gate 无限阻塞；旧 HIDL BootControl fallback 在 rodin 上会使 UFS boot-region 设置失败并导致 slot 切换失败。它们分别影响可编译性、FBE synthetic-password 流程和 Virtual A/B ROM 更新后的 slot 处理。
+当前完整设备树另外包含、但尚未进入上述引导补丁的 fastbootd USB 修复：
+
+- `init.recovery.usb.rc` 只设置 MTK UDC peripheral role；configfs/FunctionFS gadget 生命周期由 Recovery 平台 init 独占，避免 ADB/fastbootd 切换时重复绑定。
+- 已移除 `android.hardware.health-service.example.xml`：Recovery 实际启动 HIDL `health-hal-2-1`，并未提供该文件声明的 AIDL `IHealth/default`。保留错误声明会使 fastbootd 在 `AServiceManager_waitForService()` 无限等待，尚未创建 USB FunctionFS transport；repacker 会扫描最终 Recovery cpio 并拒绝该陈旧声明。
+
+这份补丁解决的问题包括：Soong 把设备树中 Android 15 预编译 NDK 库与 Android 16 AIDL 生成模块混淆，导致 recovery 依赖解析失败；运行时 bridge 因找不到 `/vendor/lib64` 内的 NDK 库而无法启动，使 Weaver 被错误的 ready gate 无限阻塞；旧 HIDL BootControl fallback 在 rodin 上使 UFS boot-region 设置失败并导致 slot 切换失败。这些问题影响可编译性、FBE synthetic-password 流程和 Virtual A/B ROM 更新后的 slot 处理。fastbootd USB 枚举修复只存在于当前完整设备树，尚未并入这份引导补丁。
 
 ## OrangeFox 共享 Recovery patch
 

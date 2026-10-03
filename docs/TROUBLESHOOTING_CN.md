@@ -313,9 +313,9 @@ adb pull /sys/fs/pstore "$LOGDIR/pstore" || true
 
 `adb devices` 和 `fastboot devices` 使用不同的 USB FunctionFS 接口。Enable ADB 能被主机识别，只能证明线缆与 ADB gadget 正常，不代表 fastbootd gadget 已绑定 UDC。
 
-当前设备树为 fastbootd 使用 `ro.recovery.usb.fastboot.pid`，并在 fastbootd 写好 FunctionFS 描述符后才绑定 UDC。不要删除 `sys.usb.ffs.ready` 门控，否则 UDC 可能早于 fastbootd 接口就绪而绑定失败。
+Recovery 平台 init rc 是 configfs/FunctionFS gadget 的唯一所有者；设备 rc 只设置 MTK UDC 的 peripheral role。此前设备 rc 也完整配置了同一个 gadget，导致两套 property action 同时创建 FunctionFS symlink 并绑定 UDC。旧 dmesg 已捕获 `File exists` 和 `Device or resource busy`，因此只在 fastbootd FunctionFS 描述符就绪后由平台 rc 绑定 UDC；不要再在设备 rc 添加第二套 gadget action。
 
-fastbootd 启动时会先等待 AIDL BootControl 服务，再打开 `/dev/usb-ffs/fastboot`。rodin 的 BootControl 服务属于 `early_hal`，Recovery 的通用启动流程不会自动启动这个 class；设备树必须在 `on boot` 中显式执行 `start vendor.boot-default`。如果日志只有 fastbootd 启动、没有 USB FunctionFS 初始化，优先检查该服务是否为 `running`，不要先改 USB VID/PID。
+fastbootd 初始化顺序是 BootControl、Health、Fastboot HAL，最后才创建 USB FunctionFS transport。rodin 的 BootControl 服务属于 `early_hal`，Recovery 的通用启动流程不会自动启动这个 class；设备树仍需在 `on boot` 中显式执行 `start vendor.boot-default`。Recovery 实际运行 HIDL `health-hal-2-1`，不提供示例 AIDL `IHealth/default`；如果 VINTF 仍声明该 AIDL 服务，`AServiceManager_waitForService()` 会在 fastbootd 构造阶段持续等待，`ClientUsbTransport` 因而不会打开 `/dev/usb-ffs/fastboot/ep0`，也不会设置 `sys.usb.ffs.ready=1`。设备树预检应拒绝该错误声明。BootControl 和 Health 是 fastbootd 的前置条件，不是 USB gadget 的配置者；不要用它们替代对 FunctionFS 和 UDC 绑定状态的检查。
 
 构建后进入 fastbootd，在主机分别运行：
 
@@ -325,7 +325,7 @@ fastboot devices -l
 lsusb -nn | grep -iE '18d1|2717'
 ```
 
-若 `lsusb` 完全没有 rodin 设备，说明主机没有观察到 USB 枚举；由于 Enable ADB 已证明线缆可用，下一步应检查 fastbootd 下设备端 UDC/gadget 状态。若能看到 `18d1:4ee0` 但 `fastboot devices -l` 为空，USB 已枚举但 fastboot 尚未识别，记录 platform-tools 版本、USB 权限和 `lsusb -v` 的接口描述符后再区分设备接口与主机工具问题。Enable ADB 状态下可另行核对设备声明的 fastboot PID：
+若 fastbootd 界面没有 USB 枚举，点击 Enable ADB 后 `init.svc.fastbootd=stopped`、`sys.usb.config=adb` 和 UDC 绑定到 ADB 是预期切换结果，不能据此判断 fastboot 状态。应检查本次启动保留的 `dmesg`/`logcat`：若有 `ctl.interface_start$aidl/android.hardware.health.IHealth/default` 失败，并且没有 `initializing functionfs`，先确认 recovery VINTF 不再声明不存在的 AIDL Health 服务；若已出现 `initializing functionfs`，再检查 fastboot FunctionFS endpoint 和 configfs UDC 绑定。若能看到 `18d1:4ee0` 但 `fastboot devices -l` 为空，USB 已枚举但 fastboot 尚未识别，记录 platform-tools 版本、USB 权限和 `lsusb -v` 的接口描述符后再区分设备接口与主机工具问题。Enable ADB 状态下可另行核对设备声明的 fastboot PID：
 
 ```bash
 adb shell getprop ro.recovery.usb.fastboot.pid

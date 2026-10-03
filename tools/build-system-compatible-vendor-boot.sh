@@ -95,6 +95,11 @@ python3 "$DTB_PATCHER" --input "$STOCK_DTB" --output "$patched_dtb"
 "$LZ4" -d -f "$RECOVERY_LZ4" "$recovery_cpio" >/dev/null
 "$LZ4" -d -f "$STOCK_RAMDISK" "$platform_cpio" >/dev/null
 
+if cpio -it --quiet < "$recovery_cpio" | grep -Eq '^(\./)?vendor/etc/vintf/manifest/android\.hardware\.health-service\.example\.xml$'; then
+    echo "recovery ramdisk still declares the unavailable AIDL Health service" >&2
+    exit 1
+fi
+
 verify_recovery_elf() {
     local cpio_file="$1" archive_path="$2" extracted_file
 
