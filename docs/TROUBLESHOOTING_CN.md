@@ -315,6 +315,8 @@ adb pull /sys/fs/pstore "$LOGDIR/pstore" || true
 
 当前设备树为 fastbootd 使用 `ro.recovery.usb.fastboot.pid`，并在 fastbootd 写好 FunctionFS 描述符后才绑定 UDC。不要删除 `sys.usb.ffs.ready` 门控，否则 UDC 可能早于 fastbootd 接口就绪而绑定失败。
 
+fastbootd 启动时会先等待 AIDL BootControl 服务，再打开 `/dev/usb-ffs/fastboot`。rodin 的 BootControl 服务属于 `early_hal`，Recovery 的通用启动流程不会自动启动这个 class；设备树必须在 `on boot` 中显式执行 `start vendor.boot-default`。如果日志只有 fastbootd 启动、没有 USB FunctionFS 初始化，优先检查该服务是否为 `running`，不要先改 USB VID/PID。
+
 构建后进入 fastbootd，在主机分别运行：
 
 ```bash

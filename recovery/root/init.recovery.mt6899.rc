@@ -64,5 +64,9 @@ on property:vendor.touch.service.ready=1
     start rodin-haptics-loader
 
 on boot
+    # fastbootd waits for the AIDL BootControl service before opening
+    # /dev/usb-ffs/fastboot. The service uses class early_hal, while the
+    # recovery init flow only class-starts default and hal.
+    start vendor.boot-default
     start boot-hal-1-2
     start health-hal-2-1

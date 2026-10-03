@@ -68,7 +68,7 @@ f09ae22ec8581cc93b1f237dc1c09f2bd30885d53dfc5ce512f8011c6efef6e2  device/xiaomi/
 9db4c6260eae00d7fe92c3d5d3db1764f62e3498e4c6b4e020c621d8dc8b752d  device/xiaomi/rodin/recovery/root/init.recovery.bootctl.rc
 c0bc22a0c7158cb92f9720f7d74f7e38861d98e7dac4c726e70da302f2a195c8  device/xiaomi/rodin/recovery/root/init.recovery.hardware.rc
 83ae9f0f252190f4e324171ae611d0aaf6cba5cca2638af2ac38f524969fc5c8  device/xiaomi/rodin/recovery/root/init.recovery.keymint.rc
-5dbbf5b7f09369becd9a8fd39db521840f62563c95d6f0bca73cee4bfa28c85d  device/xiaomi/rodin/recovery/root/init.recovery.mt6899.rc
+be8be557f3ba97b6125f9f2b9b545a1b9b48f3898260477de556c19c54b68c7a  device/xiaomi/rodin/recovery/root/init.recovery.mt6899.rc
 e9dde5655db30dcce1a8abf7a23c7db907790d791a625559a14257aad3323846  device/xiaomi/rodin/recovery/root/init.recovery.project.rc
 2a53d6de83d1194d7eb672ed18abfde6835254a3cb7cf6f94142909625efa1a4  device/xiaomi/rodin/recovery/root/init.recovery.usb.rc
 216fcf14fdb61c43faa8ecedcd4b42cf96d8dc8fb2bb4c63f1db3af9a1516736  device/xiaomi/rodin/recovery/root/lib/modules/8250_mtk.ko
