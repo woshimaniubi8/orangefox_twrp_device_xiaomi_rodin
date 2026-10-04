@@ -29,7 +29,7 @@ You can gou the prebuilt image from release
 -  **✅Multiple languages(include Chinese)**
 -  **✅Backup & Restore**
 -  **✅Flashing ZIP or Image**
-
+-  **✅FastbootD**
 **Not works:**
 
 - **❓Global device cant unlock screen in some custom device(still need test)**
