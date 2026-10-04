@@ -10,7 +10,7 @@ device/xiaomi/rodin
 
 其中最关键的内容是：
 
-- `prebuilt/`：303 stock vendor_boot、platform ramdisk、DTB、DTBO 和 kernel。
+- `prebuilt/`：303 stock vendor_boot、platform ramdisk、DTB 和 kernel；DTBO 不作为构建输入固定。
 - `proprietary/`：触摸、FBE、MiTEE、Weaver、secure-element、震动和字体文件。
 - `recovery/`：ramdisk、init、fstab、模块、固件和模块元数据。
 - `patches/`：对 `bootable/recovery` 和 `build/make` 的源码 patch。

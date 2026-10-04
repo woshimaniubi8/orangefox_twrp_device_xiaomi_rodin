@@ -42,12 +42,12 @@ prebuilt/global/modules/*.ko
 因此仅替换 `prebuilt/vendor_boot_stock.img` 不能自动适配大多数系统版本：该文件
 主要用于输入校验和导入参考，repacker 实际不会从它推导新的 kernel ABI、
 `vendor_dlkm` 模块、触摸 HAL 或 FBE 安全组件。当前预检还会拒绝未登记的
-header、DTB、ramdisk、DTBO 和 SHA-256，绕过预检只会把旧 platform 与新系统
+header、DTB、ramdisk 和 SHA-256，绕过预检只会把旧 platform 与新系统
 混用，可能导致 first-stage 挂载失败、触摸/OTG 不工作、Recovery 重启或 FBE
 无法解密。
 
 要支持一个新的 OTA/地区，至少需要从同一版本重新提取 `boot`、`init_boot`、
-`vendor_boot`、`dtbo`、`vendor_dlkm`/`odm_dlkm` 及其模块元数据，并同步触摸
+`vendor_boot`、`vendor_dlkm`/`odm_dlkm` 及其模块元数据，并同步触摸
 HAL/配置、KeyMint/Gatekeeper/Weaver/secure-element、VINTF 和 TA。只有在
 DTB、first-stage fstab、kernel vermagic/符号 CRC、模块依赖和安全 HAL 全部证明
 二进制兼容时，才可以复用已有 Recovery fragment；这属于同一 profile 的小版本
@@ -152,7 +152,7 @@ device/xiaomi/rodin/tools/collect-compat-report.sh \
 
 至少收集以下同一槽位、同一 OTA 版本的输入：
 
-- `boot`、`init_boot`、`vendor_boot`、`dtbo`。
+- `boot`、`init_boot`、`vendor_boot`；`dtbo` 不作为 Recovery 构建输入固定。
 - `vendor_dlkm`、`odm_dlkm` 和相关模块元数据。
 - vendor/odm 中的触摸 HAL、配置和固件。
 - KeyMint、Gatekeeper、Weaver、secure-element、MiTEE TA 和依赖库。

@@ -15,7 +15,7 @@
 | `prebuilt/vendor_boot_stock.img` | 当前槽位 stock `vendor_boot` | 正常启动基线、DTB/platform ramdisk 来源、回退镜像 |
 | `prebuilt/vendor_ramdisk00` | stock vendor_boot 的 unnamed type-1 fragment | 最终 system-compatible platform fragment 的唯一输入 |
 | `prebuilt/dtb/mt6899-rodin.dtb` | stock vendor_boot DTB | MT6899 硬件描述 |
-| `prebuilt/dtbo.img` | 当前固件 `dtbo` | boot overlay |
+| 设备上的 `/dtbo` 分区 | 不作为固定构建输入 | Recovery 仍可直接管理设备上的 `/dtbo` 分区；不同 OTA 可自行保留对应分区 |
 | `prebuilt/kernel` | 当前固件 boot/GKI kernel payload | 构建元数据和工具需要；Recovery 不把 kernel 塞入 vendor_boot |
 
 不要把 reference TWRP 的 vendor_boot 当作正常系统 platform 基线。参考镜像只能用于观察 ramdisk 布局、模块列表和启动参数。

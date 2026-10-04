@@ -7,7 +7,7 @@
 只有通用 OrangeFox 源码不能直接生成可用的 rodin 镜像。至少还需要：
 
 - rodin 设备树 `device/xiaomi/rodin`。
-- 当前系统配套的 stock `vendor_boot`、DTB、DTBO 和内核。
+- 当前系统配套的 stock `vendor_boot`、DTB 和内核；DTBO 不作为构建输入固定。
 - Android 16 触摸模块、TouchReport HAL、配置和依赖库。
 - Android 15 vendor 基线中的 MiTEE KeyMint、Gatekeeper、Weaver、secure-element、TA 和依赖库。
 - 与当前 vendor/vendor_dlkm 完全匹配的内核模块。
@@ -47,7 +47,7 @@ sha256sum rodin-device-tree-*.tar.zst
 | ramdisk 压缩 | 两个 fragment 都使用 LZ4 legacy |
 | 屏幕 | `1220x2712` |
 
-更换固件后不要只替换单个模块。stock `vendor_boot`、DTB、DTBO、vendor ramdisk、vendor_dlkm 模块、HAL 和 TA 应当作为一组重新提取和验证。
+更换固件后不要只替换单个模块。stock `vendor_boot`、DTB、vendor ramdisk、vendor_dlkm 模块、HAL 和 TA 应当作为一组重新提取和验证；设备上的 DTBO 分区继续由系统/Recovery 自身管理。
 
 此基线覆盖已验证的 303 Goodix/FocalTech 批次，但不能作为跨固件或未知硬件 revision 的通用包发布。兼容性边界和报告采集方法见 [COMPATIBILITY_CN.md](COMPATIBILITY_CN.md)。
 
@@ -218,7 +218,6 @@ patch 成功后，Global profile 还必须导入对应固件 fragment；CN 默�
 device/xiaomi/rodin/prebuilt/vendor_boot_stock.img
 device/xiaomi/rodin/prebuilt/vendor_ramdisk00
 device/xiaomi/rodin/prebuilt/dtb/mt6899-rodin.dtb
-device/xiaomi/rodin/prebuilt/dtbo.img
 device/xiaomi/rodin/prebuilt/kernel
 ```
 

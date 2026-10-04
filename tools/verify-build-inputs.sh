@@ -81,7 +81,7 @@ check_file "${DEVICE_DIR}/manifests/orangefox-fox_14.1-pinned.xml"
 check_sha256 "${DEVICE_DIR}/patches/orangefox-build-make.patch" 5f2d3f43a4d78eee6d560a4a169df30fc95de6fa2ed294e3210e684a641a8329
 check_sha256 "${DEVICE_DIR}/patches/orangefox-vendor-twrp.patch" d845e7cc38d612fa838db94da6336820b48d2e4251e109ee7b4ef2f361d22158
 check_sha256 "${DEVICE_DIR}/patches/orangefox-recovery.patch" 59141a5f5f91f612caeb136c6f8626f0313dd593265d6ab49d987adc0c6390bd
-check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 89b44cc54f6a0c70d7efef57b86b3eec1235267091f0d48f6c8b821368c3e6e1
+check_sha256 "${DEVICE_DIR}/manifests/device-blobs.sha256" 5b24320c886ecd148050a676316e644b614279b8d3159159743292ce6a46e360
 
 if [[ "${RODIN_ALLOW_UNPINNED_SOURCE:-0}" != "1" ]]; then
     if ! python3 "${DEVICE_DIR}/tools/verify-source-manifest.py" "${TOP_DIR}" \
@@ -99,11 +99,9 @@ while IFS= read -r relative; do
 done < <(sed -n 's#.*$(DEVICE_PATH)/\([^:[:space:]]*\):.*#\1#p' "${DEVICE_DIR}/device.mk" | sort -u)
 
 check_size "${DEVICE_DIR}/prebuilt/vendor_boot_stock.img" 67108864
-check_size "${DEVICE_DIR}/prebuilt/dtbo.img" 8388608
 check_size "${DEVICE_DIR}/prebuilt/dtb/mt6899-rodin.dtb" 444841
 check_sha256 "${DEVICE_DIR}/prebuilt/kernel" 55caa83bf1dd1ab5e34521f1faa18532a6110a065123577a1a62d80ee5178569
 check_sha256 "${DEVICE_DIR}/prebuilt/dtb/mt6899-rodin.dtb" 38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae
-check_sha256 "${DEVICE_DIR}/prebuilt/dtbo.img" ccd008dc7336301b7cc6fab7b59400b3debd2866f055f085e61696dbc7c0f298
 check_sha256 "${DEVICE_DIR}/prebuilt/vendor_boot_stock.img" 499bb470719b790baf90f8b49a0340e09b7ed983f3508736a86a6d1e9b503f47
 check_sha256 "${DEVICE_DIR}/prebuilt/vendor_ramdisk00" 192977d50a121f7a5ddfab0212488ef0dbb0326cad802ce9d664649967a9845c
 check_size "${DEVICE_DIR}/prebuilt/global/vendor_ramdisk00" 29235080

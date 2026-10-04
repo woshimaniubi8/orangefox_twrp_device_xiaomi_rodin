@@ -11,7 +11,6 @@ place of a firmware artifact.
 | --- | --- | --- |
 | `kernel` | kernel payload from `boot_a` | `55caa83bf1dd1ab5e34521f1faa18532a6110a065123577a1a62d80ee5178569` |
 | `dtb/mt6899-rodin.dtb` | DTB from `vendor_boot_a` | `38369239c984fc191e36d043d19ccbea4c1cd09ee6c80f8646d9493f650a30ae` |
-| `dtbo.img` | direct copy of `dtbo_a` | `ccd008dc7336301b7cc6fab7b59400b3debd2866f055f085e61696dbc7c0f298` |
 | `global/vendor_ramdisk00` | locally extracted type-1 platform fragment from Global OS3.0.301.0.WOJMIXM `vendor_boot.img` | `349cc6598f70ae401afe3071abed6de00815af39c5aded3551cff23364208731` |
 | `global/modules/*.ko` | matching Global OS3.0.301.0.WOJMIXM `vendor_dlkm` modules | per-file checks in `verify-build-inputs.sh` |
 | `vendor_boot_stock.img` | direct copy of `vendor_boot_a` | `499bb470719b790baf90f8b49a0340e09b7ed983f3508736a86a6d1e9b503f47` |
